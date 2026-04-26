@@ -14,10 +14,9 @@
 8. [USB CDC Communication](#8-usb-cdc-communication)
 9. [G-Code Command Reference](#9-g-code-command-reference)
 10. [Settings Reference](#10-settings-reference)
-11. [Startup Auto-Move](#11-startup-auto-move)
-12. [IRQ Priority Map](#12-irq-priority-map)
-13. [Tuning Guide](#13-tuning-guide)
-14. [Troubleshooting](#14-troubleshooting)
+11. [IRQ Priority Map](#12-irq-priority-map)
+12. [Tuning Guide](#13-tuning-guide)
+13. [Troubleshooting](#14-troubleshooting)
 
 ---
 
@@ -555,31 +554,8 @@ Settings are **not saved to flash** — they reset to firmware
 defaults on power cycle. To make them permanent, change the
 `#define` values in `stepper.h` and recompile.
 
----
 
-## 11. Startup Auto-Move
-
-On power-up, before accepting USB commands, the firmware automatically
-runs a startup sequence on the X axis to verify motion is working:
-
-```c
-Stepper_SetSpeed(AXIS_X, 500);   // 500 steps/s
-Stepper_SetAccel(AXIS_X, 800);   // 800 steps/s²
-Stepper_MoveTo(AXIS_X, 200);     // move forward 200 steps
-// wait...
-Stepper_MoveTo(AXIS_X, 0);       // return home
-// wait...
-GCode_Send("ok X homing done\r\n");
-```
-
-After this completes, the system enters normal USB command mode.
-
-To modify the startup move, edit the values in `main.c` after
-`GCode_Init()`. To disable it, remove those lines entirely.
-
----
-
-## 12. IRQ Priority Map
+## 11. IRQ Priority Map
 
 On Cortex-M3, **lower number = higher priority**.
 
@@ -599,7 +575,7 @@ wait loop would spin forever → system hangs.
 
 ---
 
-## 13. Tuning Guide
+## 12. Tuning Guide
 
 ### Steps/mm Conversion
 
@@ -654,7 +630,7 @@ reduces torque at the same current. For a humanoid base:
 
 ---
 
-## 14. Troubleshooting
+## 13. Troubleshooting
 
 ### Motor not moving
 
