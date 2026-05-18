@@ -11,6 +11,7 @@
 
 #include "gcode.h"
 #include "stepper.h"
+#include "actuator.h"
 #include "usbd_cdc_if.h"
 #include <string.h>
 #include <stdint.h>
@@ -193,6 +194,11 @@ static void send_status(void)
     p = fmt_i32(p, Stepper_GetPos(AXIS_Y) + gc.offset[AXIS_Y]);
     p = fmt_str(p, "|F:");
     p = fmt_u32(p, gc.feed_sps);
+    {
+        ActuatorDir _d = Actuator_GetDir();
+        p = fmt_str(p, "|Act:");
+        p = fmt_str(p, _d==ACT_EXTEND ? "Ext" : _d==ACT_RETRACT ? "Ret" : "Stop");
+    }
     p = fmt_str(p, ">\r\n");
     *p = '\0';
     GCode_Send(buf);
@@ -401,15 +407,36 @@ static void execute_line(char *line)
                 GCode_Send("[MSG:Paused-send ~ to resume]\r\n");
                 send_ok(); return;
             case 2: case 30:
-                Stepper_StopAll();
+                Stepper_StopAll(); Actuator_Stop();
                 GCode_Send("[MSG:Program end]\r\n");
+                send_ok(); return;
+            case 3: {
+                /* M3 S<ms> — extend actuator for S ms (0 = run forever) */
+                bool has_s; int32_t s10 = parse_word_tenths(line, 'S', &has_s);
+                uint32_t ms = has_s ? (uint32_t)tenths_to_steps(s10) : 0;
+                Actuator_Run(ACT_EXTEND, ms);
+                GCode_Send("[MSG:Actuator extending]\r\n");
+                send_ok(); return;
+            }
+            case 4: {
+                /* M4 S<ms> — retract actuator for S ms (0 = run forever) */
+                bool has_s; int32_t s10 = parse_word_tenths(line, 'S', &has_s);
+                uint32_t ms = has_s ? (uint32_t)tenths_to_steps(s10) : 0;
+                Actuator_Run(ACT_RETRACT, ms);
+                GCode_Send("[MSG:Actuator retracting]\r\n");
+                send_ok(); return;
+            }
+            case 5:
+                /* M5 — stop actuator immediately */
+                Actuator_Stop();
+                GCode_Send("[MSG:Actuator stopped]\r\n");
                 send_ok(); return;
             case 17:
                 send_ok(); return;
             case 18: case 84:
-                Stepper_StopAll(); send_ok(); return;
+                Stepper_StopAll(); Actuator_Stop(); send_ok(); return;
             case 112:
-                Stepper_StopAll(); gc.alarm = true;
+                Stepper_StopAll(); Actuator_Stop(); gc.alarm = true;
                 GCode_Send("ALARM\r\n"); return;
             default:
                 send_err("M?"); return;
@@ -518,6 +545,9 @@ void GCode_Poll(void)
 
     /* Drain USB TX ring — fire next DMA chunk if USB is free */
     USB_CDC_TxPoll();
+
+    /* Service linear actuator timed stop */
+    Actuator_Poll();
 
     /* Handle dwell completion */
     if (gc.dwelling && HAL_GetTick() >= gc.dwell_end_ms) {

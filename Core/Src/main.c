@@ -14,6 +14,7 @@
 #include "usb_device.h"
 #include "stepper.h"
 #include "gcode.h"
+#include "actuator.h"
 
 TIM_HandleTypeDef htim2;
 
@@ -31,7 +32,17 @@ int main(void)
 
     HAL_Delay(500);         /* USB enumeration settle */
     Stepper_Init(&htim2);   /* reconfigures TIM2 as plain counter + GPIO */
+    Actuator_Init();         /* PB10/PB11 for L298 DC actuator               */
     GCode_Init();
+
+    /* ── Startup auto-move: X axis runs 200 steps forward then back ── */
+    Stepper_SetSpeed(AXIS_X, 500);          /* 500 steps/s              */
+    Stepper_SetAccel(AXIS_X, 800);          /* 800 steps/s²             */
+    Stepper_MoveTo(AXIS_X, 200);            /* move to position 200     */
+    while (Stepper_IsAxisBusy(AXIS_X)) {}  /* wait for move to finish  */
+    Stepper_MoveTo(AXIS_X, 0);              /* return to home           */
+    while (Stepper_IsAxisBusy(AXIS_X)) {}  /* wait                     */
+    GCode_Send("ok X homing done\r\n");    /* notify host              */
 
     while (1) {
         GCode_Poll();
