@@ -1,21 +1,22 @@
-/* actuator.h — Linear DC actuator driver via L298 on PB10/PB11
+/* actuator.h — Linear DC actuator via L298 with PWM speed control
  *
- * L298 wiring:
- *   PB10 → IN1  (HIGH = extend direction)
- *   PB11 → IN2  (HIGH = retract direction)
+ * Hardware connections:
+ *   PB10 → L298 IN1   (direction: HIGH = extend)
+ *   PB11 → L298 IN2   (direction: HIGH = retract)
+ *   PB0  → L298 ENA   (TIM3 CH3 PWM — speed 0-100%)
  *
  * L298 truth table:
- *   IN1=1 IN2=0 → Motor forward  (EXTEND)
- *   IN1=0 IN2=1 → Motor reverse  (RETRACT)
- *   IN1=0 IN2=0 → Coast / stop
- *   IN1=1 IN2=1 → Brake (avoid — may damage L298)
+ *   IN1=1 IN2=0 ENA=PWM → Extend  at speed%
+ *   IN1=0 IN2=1 ENA=PWM → Retract at speed%
+ *   IN1=x IN2=x ENA=0   → Stop (coast)
  *
  * G-code commands:
- *   M3 S<ms>  — extend   for S milliseconds  (0 = run indefinitely)
- *   M4 S<ms>  — retract  for S milliseconds  (0 = run indefinitely)
- *   M5        — stop actuator immediately
+ *   M3 S<ms> P<pct>  — extend   for S ms at P% speed (S=0 = forever)
+ *   M4 S<ms> P<pct>  — retract  for S ms at P% speed (S=0 = forever)
+ *   M5               — stop immediately
  *
- * Actuator_Poll() must be called from the main loop (GCode_Poll).
+ *   P word is optional — defaults to last set speed (default 100%)
+ *   Speed can also be changed while running: M3 P50 (no S = keep running)
  */
 
 #ifndef ACTUATOR_H
@@ -35,27 +36,31 @@ typedef enum {
     ACT_RETRACT = 2
 } ActuatorDir;
 
-/* Initialise GPIO pins PB10 and PB11 */
+/* Initialise GPIO (PB10/PB11) and TIM3 CH3 PWM (PB0) */
 void Actuator_Init(void);
 
-/* Start actuator in given direction for duration_ms.
- * Pass duration_ms = 0 to run until Actuator_Stop() is called. */
-void Actuator_Run(ActuatorDir dir, uint32_t duration_ms);
+/* Run in given direction, duration_ms (0=forever), speed_pct 0-100 */
+void Actuator_Run(ActuatorDir dir, uint32_t duration_ms, uint8_t speed_pct);
 
-/* Stop actuator immediately */
+/* Change speed while running (0-100%) */
+void Actuator_SetSpeed(uint8_t speed_pct);
+
+/* Stop immediately */
 void Actuator_Stop(void);
 
-/* Returns true if a timed run is still active */
+/* Returns true if actuator is running */
 bool Actuator_IsBusy(void);
 
 /* Get current direction */
 ActuatorDir Actuator_GetDir(void);
 
-/* Call from main loop — handles timed stop */
+/* Get current speed 0-100 */
+uint8_t Actuator_GetSpeed(void);
+
+/* Call from main loop — handles timed auto-stop */
 void Actuator_Poll(void);
 
 #ifdef __cplusplus
 }
 #endif
-
 #endif /* ACTUATOR_H */

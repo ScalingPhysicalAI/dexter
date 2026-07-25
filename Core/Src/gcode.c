@@ -79,6 +79,19 @@ static void send_kv(const char *key, int32_t val, const char *sfx)
  * ══════════════════════════════════════════════════════════════════════════ */
 typedef enum { DIST_ABS = 0, DIST_REL } DistMode;
 
+/* Unit conversion config
+ * steps_per_rev: motor steps per full shaft revolution (e.g. 200 * 16 = 3200)
+ * um_per_rev:    distance per revolution in micrometres (e.g. 8 mm = 8000 µm)
+ * unit_mm:       0 = all commands in raw steps, 1 = commands in mm
+ *
+ * steps/mm = steps_per_rev * 1000 / um_per_rev
+ * (multiply by 1000 to avoid float: um_per_rev/1000 = mm_per_rev)
+ */
+#define DEFAULT_STEPS_PER_REV  3200UL   /* 200 steps * 16 microsteps        */
+#define DEFAULT_UM_PER_REV     8000UL   /* 8 mm lead screw = 8000 µm/rev    */
+#define DEFAULT_Z_STEPS_PER_REV 3200UL  /* Z vertical stepper — same default */
+#define DEFAULT_Z_UM_PER_REV    8000UL  /* adjust for your vertical drive    */
+
 static struct {
     char     line_buf[GCODE_LINE_MAX];
     uint8_t  line_len;
@@ -96,6 +109,11 @@ static struct {
     uint32_t  dwell_end_ms;
     bool      paused;
     bool      alarm;
+
+    /* unit conversion — per axis */
+    uint32_t  steps_per_rev[NUM_AXES];   /* pulses per motor revolution      */
+    uint32_t  um_per_rev[NUM_AXES];      /* µm travelled per revolution      */
+    bool      unit_mm;                   /* false=steps mode, true=mm mode   */
 } gc;
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -134,6 +152,61 @@ static inline int32_t tenths_to_steps(int32_t t)
 {
     if (t >= 0) return (t + 5) / 10;
     return -((-t + 5) / 10);
+}
+
+/* Convert tenths-of-mm (from parser) to steps using axis calibration.
+ * tenths_mm = value × 10 from parse_word_tenths (e.g. "X10.5" → 105)
+ * Formula:  steps = tenths_mm × steps_per_rev × 100 / um_per_rev
+ *           (×100 because tenths_mm is mm×10, and um_per_rev is µm,
+ *            so mm×10 × 1000/10 = mm×100; steps = mm × steps_per_mm)
+ * Integer-only, no float, no libm.
+ */
+static int32_t tenths_mm_to_steps(int32_t t, uint8_t axis)
+{
+    if (gc.um_per_rev[axis] == 0) return 0;
+    /* t is in tenths of mm = µm * 100
+     * steps = t * steps_per_rev * 100 / um_per_rev
+     * To avoid 32-bit overflow: max t ≈ 100000 (10 m), spr ≈ 6400, upr ≈ 1000
+     * 100000 * 6400 * 100 = 6.4e10 → needs 64-bit intermediate */
+    int32_t sign = (t < 0) ? -1 : 1;
+    uint32_t abs_t = (uint32_t)(t < 0 ? -t : t);
+    uint64_t num = (uint64_t)abs_t * gc.steps_per_rev[axis] * 100ULL;
+    uint32_t steps = (uint32_t)(num / gc.um_per_rev[axis]);
+    return sign * (int32_t)steps;
+}
+
+/* Convert steps to tenths-of-mm for display */
+static int32_t steps_to_tenths_mm(int32_t steps, uint8_t axis)
+{
+    if (gc.steps_per_rev[axis] == 0) return 0;
+    int32_t sign = (steps < 0) ? -1 : 1;
+    uint32_t abs_s = (uint32_t)(steps < 0 ? -steps : steps);
+    uint64_t num = (uint64_t)abs_s * gc.um_per_rev[axis];
+    uint32_t tenths = (uint32_t)(num / ((uint64_t)gc.steps_per_rev[axis] * 100ULL));
+    return sign * (int32_t)tenths;
+}
+
+/* Append a fixed-point mm value (tenths_mm / 10) as "nnn.n" */
+static char *fmt_mm(char *p, int32_t tenths_mm)
+{
+    if (tenths_mm < 0) { *p++ = '-'; tenths_mm = -tenths_mm; }
+    p = fmt_u32(p, (uint32_t)(tenths_mm / 10));
+    *p++ = '.';
+    *p++ = (char)('0' + tenths_mm % 10);
+    return p;
+}
+
+/* Convert F word: mm/min → sps using axis 0 calibration (dominant axis) */
+static uint32_t feed_mmpm_to_sps(uint32_t mmpm, uint8_t axis)
+{
+    if (gc.um_per_rev[axis] == 0 || gc.steps_per_rev[axis] == 0) return gc.feed_sps;
+    /* sps = (mmpm * steps_per_rev) / (um_per_rev / 1000 * 60)
+     *     = mmpm * steps_per_rev * 1000 / (um_per_rev * 60)  */
+    uint64_t num = (uint64_t)mmpm * gc.steps_per_rev[axis] * 1000ULL;
+    uint32_t sps = (uint32_t)(num / ((uint64_t)gc.um_per_rev[axis] * 60ULL));
+    if (sps < STEPPER_MIN_SPEED_SPS) sps = STEPPER_MIN_SPEED_SPS;
+    if (sps > 20000UL)               sps = 20000UL;
+    return sps;
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -175,7 +248,7 @@ static void send_err(const char *m)
 static void send_status(void)
 {
     /* Worst case: "<Alarm|MPos:-32768,-32768|WPos:-32768,-32768|F:65535>\r\n" = ~55 chars */
-    char buf[80]; char *p = buf;
+    char buf[120]; char *p = buf;
     const char *st;
     if      (gc.alarm)          st = "Alarm";
     else if (gc.paused)         st = "Hold";
@@ -185,19 +258,32 @@ static void send_status(void)
     p = fmt_str(p, "<");
     p = fmt_str(p, st);
     p = fmt_str(p, "|MPos:");
-    p = fmt_i32(p, Stepper_GetPos(AXIS_X));
-    *p++ = ',';
-    p = fmt_i32(p, Stepper_GetPos(AXIS_Y));
+    if (gc.unit_mm) {
+        p = fmt_mm(p, steps_to_tenths_mm(Stepper_GetPos(AXIS_X), AXIS_X)); *p++ = ',';
+        p = fmt_mm(p, steps_to_tenths_mm(Stepper_GetPos(AXIS_Y), AXIS_Y)); *p++ = ',';
+        p = fmt_mm(p, steps_to_tenths_mm(Stepper_GetPos(AXIS_Z), AXIS_Z));
+    } else {
+        p = fmt_i32(p, Stepper_GetPos(AXIS_X)); *p++ = ',';
+        p = fmt_i32(p, Stepper_GetPos(AXIS_Y)); *p++ = ',';
+        p = fmt_i32(p, Stepper_GetPos(AXIS_Z));
+    }
     p = fmt_str(p, "|WPos:");
-    p = fmt_i32(p, Stepper_GetPos(AXIS_X) + gc.offset[AXIS_X]);
-    *p++ = ',';
-    p = fmt_i32(p, Stepper_GetPos(AXIS_Y) + gc.offset[AXIS_Y]);
+    if (gc.unit_mm) {
+        p = fmt_mm(p, steps_to_tenths_mm(Stepper_GetPos(AXIS_X)+gc.offset[AXIS_X], AXIS_X)); *p++ = ',';
+        p = fmt_mm(p, steps_to_tenths_mm(Stepper_GetPos(AXIS_Y)+gc.offset[AXIS_Y], AXIS_Y)); *p++ = ',';
+        p = fmt_mm(p, steps_to_tenths_mm(Stepper_GetPos(AXIS_Z)+gc.offset[AXIS_Z], AXIS_Z));
+    } else {
+        p = fmt_i32(p, Stepper_GetPos(AXIS_X)+gc.offset[AXIS_X]); *p++ = ',';
+        p = fmt_i32(p, Stepper_GetPos(AXIS_Y)+gc.offset[AXIS_Y]); *p++ = ',';
+        p = fmt_i32(p, Stepper_GetPos(AXIS_Z)+gc.offset[AXIS_Z]);
+    }
     p = fmt_str(p, "|F:");
     p = fmt_u32(p, gc.feed_sps);
     {
         ActuatorDir _d = Actuator_GetDir();
         p = fmt_str(p, "|Act:");
         p = fmt_str(p, _d==ACT_EXTEND ? "Ext" : _d==ACT_RETRACT ? "Ret" : "Stop");
+        if (_d != ACT_STOP) { *p++ = '@'; p = fmt_u32(p, Actuator_GetSpeed()); *p++ = '%'; }
     }
     p = fmt_str(p, ">\r\n");
     *p = '\0';
@@ -206,12 +292,29 @@ static void send_status(void)
 
 static void print_settings(void)
 {
-    send_kv("$0=", (int32_t)gc.max_sps[AXIS_X], " ;X max sps\r\n");
-    send_kv("$1=", (int32_t)gc.max_sps[AXIS_Y], " ;Y max sps\r\n");
-    send_kv("$2=", (int32_t)gc.accel[AXIS_X],   " ;X accel sps2\r\n");
-    send_kv("$3=", (int32_t)gc.accel[AXIS_Y],   " ;Y accel sps2\r\n");
-    send_kv("$4=", (int32_t)gc.feed_sps,         " ;feed sps\r\n");
-    send_kv("$5=", (int32_t)gc.rapid_sps,        " ;rapid sps\r\n");
+    send_kv("$0=",  (int32_t)gc.max_sps[AXIS_X],       " ;X max sps\r\n");
+    send_kv("$1=",  (int32_t)gc.max_sps[AXIS_Y],       " ;Y max sps\r\n");
+    send_kv("$2=",  (int32_t)gc.accel[AXIS_X],         " ;X accel sps2\r\n");
+    send_kv("$3=",  (int32_t)gc.accel[AXIS_Y],         " ;Y accel sps2\r\n");
+    send_kv("$4=",  (int32_t)gc.feed_sps,               " ;feed sps\r\n");
+    send_kv("$5=",  (int32_t)gc.rapid_sps,              " ;rapid sps\r\n");
+    send_kv("$6=",  (int32_t)gc.max_sps[AXIS_Z],       " ;Z max sps\r\n");
+    send_kv("$7=",  (int32_t)gc.accel[AXIS_Z],         " ;Z accel sps2\r\n");
+    send_kv("$10=", (int32_t)gc.steps_per_rev[AXIS_X],  " ;X pulses/rev\r\n");
+    send_kv("$11=", (int32_t)gc.um_per_rev[AXIS_X],     " ;X um/rev\r\n");
+    send_kv("$12=", (int32_t)gc.steps_per_rev[AXIS_Y],  " ;Y pulses/rev\r\n");
+    send_kv("$13=", (int32_t)gc.um_per_rev[AXIS_Y],     " ;Y um/rev\r\n");
+    send_kv("$14=", gc.unit_mm ? 1 : 0,                 " ;unit 0=steps 1=mm\r\n");
+    send_kv("$15=", (int32_t)gc.steps_per_rev[AXIS_Z],  " ;Z pulses/rev\r\n");
+    send_kv("$16=", (int32_t)gc.um_per_rev[AXIS_Z],     " ;Z um/rev\r\n");
+    /* Derived steps/mm for each axis */
+    for (int _i = 0; _i < NUM_AXES; _i++) {
+        if (gc.um_per_rev[_i] > 0) {
+            uint32_t spmm = gc.steps_per_rev[_i] * 1000UL / gc.um_per_rev[_i];
+            const char *lbl = (_i==AXIS_X)?"[X steps/mm=":(_i==AXIS_Y)?"[Y steps/mm=":"[Z steps/mm=";
+            send_kv(lbl, (int32_t)spmm, "]\r\n");
+        }
+    }
     send_ok();
 }
 
@@ -248,61 +351,54 @@ static void wait_axis(uint8_t axis)
  * For G0 (rapid) both axes run at max speed independently — they start
  * together but the shorter axis finishes first (true rapid behaviour).
  */
-static void do_move(int32_t wx, int32_t wy, uint32_t spd)
+static void do_move(int32_t wx, int32_t wy, int32_t wz, uint32_t spd)
 {
     if (gc.alarm || gc.paused) return;
 
-    /* Wait for any previous move to finish */
     wait_all();
 
     int32_t mx = wx - gc.offset[AXIS_X];
     int32_t my = wy - gc.offset[AXIS_Y];
+    int32_t mz = wz - gc.offset[AXIS_Z];
 
     int32_t dx = mx - Stepper_GetPos(AXIS_X);
     int32_t dy = my - Stepper_GetPos(AXIS_Y);
+    int32_t dz = mz - Stepper_GetPos(AXIS_Z);
 
-    if (dx == 0 && dy == 0) return;
+    if (dx == 0 && dy == 0 && dz == 0) return;
 
-    /* Compute per-axis speeds for coordinated motion.
-     * Dominant axis runs at 'spd'; subordinate axis is scaled:
-     *   spd_minor = spd * |d_minor| / |d_major|
-     * This keeps the vector resultant speed constant (linear interp). */
-    uint32_t steps_x = (uint32_t)(dx < 0 ? -dx : dx);
-    uint32_t steps_y = (uint32_t)(dy < 0 ? -dy : dy);
+    uint32_t sx = (uint32_t)(dx < 0 ? -dx : dx);
+    uint32_t sy = (uint32_t)(dy < 0 ? -dy : dy);
+    uint32_t sz = (uint32_t)(dz < 0 ? -dz : dz);
 
-    uint32_t spd_x, spd_y;
+    /* Find dominant axis (most steps) — runs at full spd.
+     * Others scaled proportionally so all finish simultaneously. */
+    uint32_t smax = sx;
+    if (sy > smax) smax = sy;
+    if (sz > smax) smax = sz;
 
-    if (steps_x == 0) {
-        spd_x = STEPPER_MIN_SPEED_SPS;
-        spd_y = spd;
-    } else if (steps_y == 0) {
-        spd_x = spd;
-        spd_y = STEPPER_MIN_SPEED_SPS;
-    } else if (steps_x >= steps_y) {
-        /* X is dominant */
-        spd_x = spd;
-        spd_y = (uint32_t)((uint64_t)spd * steps_y / steps_x);
-        if (spd_y < STEPPER_MIN_SPEED_SPS) spd_y = STEPPER_MIN_SPEED_SPS;
-    } else {
-        /* Y is dominant */
-        spd_y = spd;
-        spd_x = (uint32_t)((uint64_t)spd * steps_x / steps_y);
-        if (spd_x < STEPPER_MIN_SPEED_SPS) spd_x = STEPPER_MIN_SPEED_SPS;
-    }
+    uint32_t spd_x = (smax > 0 && sx > 0) ? (uint32_t)((uint64_t)spd * sx / smax) : STEPPER_MIN_SPEED_SPS;
+    uint32_t spd_y = (smax > 0 && sy > 0) ? (uint32_t)((uint64_t)spd * sy / smax) : STEPPER_MIN_SPEED_SPS;
+    uint32_t spd_z = (smax > 0 && sz > 0) ? (uint32_t)((uint64_t)spd * sz / smax) : STEPPER_MIN_SPEED_SPS;
 
-    /* Set per-axis speed and accel */
+    if (spd_x < STEPPER_MIN_SPEED_SPS) spd_x = STEPPER_MIN_SPEED_SPS;
+    if (spd_y < STEPPER_MIN_SPEED_SPS) spd_y = STEPPER_MIN_SPEED_SPS;
+    if (spd_z < STEPPER_MIN_SPEED_SPS) spd_z = STEPPER_MIN_SPEED_SPS;
+
     Stepper_SetSpeed(AXIS_X, spd_x);
     Stepper_SetSpeed(AXIS_Y, spd_y);
+    Stepper_SetSpeed(AXIS_Z, spd_z);
 
-    /* Start both axes simultaneously */
+    /* Start all three simultaneously */
     if (dx != 0) Stepper_MoveTo(AXIS_X, mx);
     if (dy != 0) Stepper_MoveTo(AXIS_Y, my);
+    if (dz != 0) Stepper_MoveTo(AXIS_Z, mz);
 
-    /* Wait for both to finish */
     wait_all();
 
     gc.wpos[AXIS_X] = wx;
     gc.wpos[AXIS_Y] = wy;
+    gc.wpos[AXIS_Z] = wz;
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -320,10 +416,9 @@ static void parse_setting(const char *line)
 
     /* $H — home */
     if (c1 == 'H') {
-        do_move(gc.offset[AXIS_X], gc.offset[AXIS_Y], gc.rapid_sps);
-        Stepper_SetZero(AXIS_X);
-        Stepper_SetZero(AXIS_Y);
-        gc.wpos[AXIS_X] = gc.wpos[AXIS_Y] = 0;
+        do_move(gc.offset[AXIS_X], gc.offset[AXIS_Y], gc.offset[AXIS_Z], gc.rapid_sps);
+        Stepper_SetZero(AXIS_X); Stepper_SetZero(AXIS_Y); Stepper_SetZero(AXIS_Z);
+        gc.wpos[AXIS_X] = gc.wpos[AXIS_Y] = gc.wpos[AXIS_Z] = 0;
         GCode_Send("[MSG:Homed]\r\n");
         send_ok();
         return;
@@ -348,12 +443,21 @@ static void parse_setting(const char *line)
     if (v == 0) { send_err("value must be >0"); return; }
 
     switch (n) {
-        case 0: gc.max_sps[AXIS_X] = v; Stepper_SetSpeed(AXIS_X, v); break;
-        case 1: gc.max_sps[AXIS_Y] = v; Stepper_SetSpeed(AXIS_Y, v); break;
-        case 2: gc.accel[AXIS_X]   = v; Stepper_SetAccel(AXIS_X, v); break;
-        case 3: gc.accel[AXIS_Y]   = v; Stepper_SetAccel(AXIS_Y, v); break;
-        case 4: gc.feed_sps  = v; break;
-        case 5: gc.rapid_sps = v; break;
+        case 0:  gc.max_sps[AXIS_X] = v; Stepper_SetSpeed(AXIS_X, v); break;
+        case 1:  gc.max_sps[AXIS_Y] = v; Stepper_SetSpeed(AXIS_Y, v); break;
+        case 2:  gc.accel[AXIS_X]   = v; Stepper_SetAccel(AXIS_X, v); break;
+        case 3:  gc.accel[AXIS_Y]   = v; Stepper_SetAccel(AXIS_Y, v); break;
+        case 4:  gc.feed_sps  = v; break;
+        case 5:  gc.rapid_sps = v; break;
+        case 6:  gc.max_sps[AXIS_Z] = v; Stepper_SetSpeed(AXIS_Z, v); break;
+        case 7:  gc.accel[AXIS_Z]   = v; Stepper_SetAccel(AXIS_Z, v); break;
+        case 10: gc.steps_per_rev[AXIS_X] = v; break;
+        case 11: gc.um_per_rev[AXIS_X]    = v; break;
+        case 12: gc.steps_per_rev[AXIS_Y] = v; break;
+        case 13: gc.um_per_rev[AXIS_Y]    = v; break;
+        case 14: gc.unit_mm = (v != 0);        break;
+        case 15: gc.steps_per_rev[AXIS_Z] = v; break;
+        case 16: gc.um_per_rev[AXIS_Z]    = v; break;
         default: send_err("unknown $n"); return;
     }
     send_ok();
@@ -411,18 +515,24 @@ static void execute_line(char *line)
                 GCode_Send("[MSG:Program end]\r\n");
                 send_ok(); return;
             case 3: {
-                /* M3 S<ms> — extend actuator for S ms (0 = run forever) */
+                /* M3 S<ms> P<pct> — extend, duration ms, speed 0-100% */
                 bool has_s; int32_t s10 = parse_word_tenths(line, 'S', &has_s);
-                uint32_t ms = has_s ? (uint32_t)tenths_to_steps(s10) : 0;
-                Actuator_Run(ACT_EXTEND, ms);
+                bool has_pw; int32_t pw10 = parse_word_tenths(line, 'P', &has_pw);
+                uint32_t ms  = has_s  ? (uint32_t)tenths_to_steps(s10)  : 0;
+                uint8_t  pct = has_pw ? (uint8_t) tenths_to_steps(pw10) : Actuator_GetSpeed();
+                if (pct > 100) pct = 100;
+                Actuator_Run(ACT_EXTEND, ms, pct);
                 GCode_Send("[MSG:Actuator extending]\r\n");
                 send_ok(); return;
             }
             case 4: {
-                /* M4 S<ms> — retract actuator for S ms (0 = run forever) */
+                /* M4 S<ms> P<pct> — retract, duration ms, speed 0-100% */
                 bool has_s; int32_t s10 = parse_word_tenths(line, 'S', &has_s);
-                uint32_t ms = has_s ? (uint32_t)tenths_to_steps(s10) : 0;
-                Actuator_Run(ACT_RETRACT, ms);
+                bool has_pw; int32_t pw10 = parse_word_tenths(line, 'P', &has_pw);
+                uint32_t ms  = has_s  ? (uint32_t)tenths_to_steps(s10)  : 0;
+                uint8_t  pct = has_pw ? (uint8_t) tenths_to_steps(pw10) : Actuator_GetSpeed();
+                if (pct > 100) pct = 100;
+                Actuator_Run(ACT_RETRACT, ms, pct);
                 GCode_Send("[MSG:Actuator retracting]\r\n");
                 send_ok(); return;
             }
@@ -453,18 +563,34 @@ static void execute_line(char *line)
     switch (g_code) {
         case 0:
         case 1: {
+            bool has_z; int32_t z10 = parse_word_tenths(line, 'Z', &has_z);
             int32_t tx = gc.wpos[AXIS_X];
             int32_t ty = gc.wpos[AXIS_Y];
+            int32_t tz = gc.wpos[AXIS_Z];
             if (gc.dist_mode == DIST_ABS) {
-                if (has_x) tx = tenths_to_steps(x10);
-                if (has_y) ty = tenths_to_steps(y10);
+                if (has_x) tx = gc.unit_mm ? tenths_mm_to_steps(x10, AXIS_X) : tenths_to_steps(x10);
+                if (has_y) ty = gc.unit_mm ? tenths_mm_to_steps(y10, AXIS_Y) : tenths_to_steps(y10);
+                if (has_z) tz = gc.unit_mm ? tenths_mm_to_steps(z10, AXIS_Z) : tenths_to_steps(z10);
             } else {
-                if (has_x) tx += tenths_to_steps(x10);
-                if (has_y) ty += tenths_to_steps(y10);
+                if (has_x) tx += gc.unit_mm ? tenths_mm_to_steps(x10, AXIS_X) : tenths_to_steps(x10);
+                if (has_y) ty += gc.unit_mm ? tenths_mm_to_steps(y10, AXIS_Y) : tenths_to_steps(y10);
+                if (has_z) tz += gc.unit_mm ? tenths_mm_to_steps(z10, AXIS_Z) : tenths_to_steps(z10);
             }
-            uint32_t spd = (g_code == 0) ? gc.rapid_sps : gc.feed_sps;
+            uint32_t spd;
+            if (g_code == 0) {
+                spd = gc.rapid_sps;
+            } else {
+                spd = gc.feed_sps;
+                if (has_f && f10 > 0) {
+                    if (gc.unit_mm)
+                        spd = feed_mmpm_to_sps((uint32_t)tenths_to_steps(f10), AXIS_X);
+                    else
+                        spd = (uint32_t)tenths_to_steps(f10);
+                    gc.feed_sps = spd;
+                }
+            }
             if (spd > gc.max_sps[AXIS_X]) spd = gc.max_sps[AXIS_X];
-            do_move(tx, ty, spd);
+            do_move(tx, ty, tz, spd);
             send_ok();
             break;
         }
@@ -477,20 +603,24 @@ static void execute_line(char *line)
             break;
         }
         case 28:
-            do_move(gc.offset[AXIS_X], gc.offset[AXIS_Y], gc.rapid_sps);
-            Stepper_SetZero(AXIS_X); Stepper_SetZero(AXIS_Y);
-            gc.wpos[AXIS_X] = gc.wpos[AXIS_Y] = 0;
+            do_move(gc.offset[AXIS_X], gc.offset[AXIS_Y], gc.offset[AXIS_Z], gc.rapid_sps);
+            Stepper_SetZero(AXIS_X); Stepper_SetZero(AXIS_Y); Stepper_SetZero(AXIS_Z);
+            gc.wpos[AXIS_X] = gc.wpos[AXIS_Y] = gc.wpos[AXIS_Z] = 0;
             send_ok(); break;
         case 90:
             gc.dist_mode = DIST_ABS; send_ok(); break;
         case 91:
             gc.dist_mode = DIST_REL; send_ok(); break;
-        case 92:
-            if (has_x) gc.offset[AXIS_X] = tenths_to_steps(x10) - Stepper_GetPos(AXIS_X);
-            if (has_y) gc.offset[AXIS_Y] = tenths_to_steps(y10) - Stepper_GetPos(AXIS_Y);
+        case 92: {
+            bool has_z92; int32_t z10_92 = parse_word_tenths(line, 'Z', &has_z92);
+            if (has_x) gc.offset[AXIS_X] = (gc.unit_mm ? tenths_mm_to_steps(x10,    AXIS_X) : tenths_to_steps(x10))    - Stepper_GetPos(AXIS_X);
+            if (has_y) gc.offset[AXIS_Y] = (gc.unit_mm ? tenths_mm_to_steps(y10,    AXIS_Y) : tenths_to_steps(y10))    - Stepper_GetPos(AXIS_Y);
+            if (has_z92) gc.offset[AXIS_Z] = (gc.unit_mm ? tenths_mm_to_steps(z10_92, AXIS_Z) : tenths_to_steps(z10_92)) - Stepper_GetPos(AXIS_Z);
             gc.wpos[AXIS_X] = Stepper_GetPos(AXIS_X) + gc.offset[AXIS_X];
             gc.wpos[AXIS_Y] = Stepper_GetPos(AXIS_Y) + gc.offset[AXIS_Y];
+            gc.wpos[AXIS_Z] = Stepper_GetPos(AXIS_Z) + gc.offset[AXIS_Z];
             send_ok(); break;
+        }
         default:
             send_err("G?"); break;
     }
@@ -506,12 +636,17 @@ void GCode_Init(void)
     gc.dist_mode = DIST_ABS;
     gc.feed_sps  = DEFAULT_FEED_SPS;
     gc.rapid_sps = DEFAULT_RAPID_SPS;
+    gc.unit_mm   = false;
     for (int i = 0; i < NUM_AXES; i++) {
-        gc.max_sps[i] = DEFAULT_RAPID_SPS;
-        gc.accel[i]   = DEFAULT_ACCEL_SPS2;
+        gc.max_sps[i]       = DEFAULT_RAPID_SPS;
+        gc.accel[i]         = DEFAULT_ACCEL_SPS2;
+        gc.steps_per_rev[i] = (i == AXIS_Z) ? DEFAULT_Z_STEPS_PER_REV : DEFAULT_STEPS_PER_REV;
+        gc.um_per_rev[i]    = (i == AXIS_Z) ? DEFAULT_Z_UM_PER_REV    : DEFAULT_UM_PER_REV;
         Stepper_SetSpeed(i, gc.max_sps[i]);
         Stepper_SetAccel(i, gc.accel[i]);
     }
+    gc.wpos[AXIS_Z]   = 0;
+    gc.offset[AXIS_Z] = 0;
     GCode_Send("\r\nHumanoidBase GRBL v1.1\r\n");
     GCode_Send("? status  $ settings  ! hold  ~ resume\r\n");
 }

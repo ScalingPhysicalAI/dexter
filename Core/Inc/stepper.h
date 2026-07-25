@@ -1,7 +1,10 @@
-/* stepper.h — 2-axis stepper driver, STM32F103C6 (32 KB flash)
+/* stepper.h — 3-axis stepper driver, STM32F103C6 (32 KB flash)
  *
- *  PA0 TIM2-CH1 STEP_X   PA4 DIR_X
- *  PA1 TIM2-CH2 STEP_Y   PA5 DIR_Y
+ *  PA0  STEP_X   PA4  DIR_X
+ *  PA1  STEP_Y   PA5  DIR_Y
+ *  PB10 STEP_Z   PB11 DIR_Z   (replaces L298 DC actuator)
+ *
+ *  TIM2 Update IRQ @ 10 kHz — absolute tick scheduler per axis
  */
 #ifndef STEPPER_H
 #define STEPPER_H
@@ -13,15 +16,17 @@ extern "C" {
 #include <stdint.h>
 #include <stdbool.h>
 
-/* ── defaults (override with Stepper_SetSpeed / Stepper_SetAccel) ──────── */
+/* ── motion defaults ────────────────────────────────────────────────────── */
 #define STEPPER_DEFAULT_MAX_SPEED_SPS   1000UL
 #define STEPPER_DEFAULT_ACCEL_SPS2      5000UL
 #define STEPPER_MIN_SPEED_SPS           50UL
 #define STEPPER_TIMER_CLOCK_HZ          48000000UL
 
+/* ── axis indices ───────────────────────────────────────────────────────── */
 #define AXIS_X   0
 #define AXIS_Y   1
-#define NUM_AXES 2
+#define AXIS_Z   2
+#define NUM_AXES 3
 
 typedef enum { MOTOR_IDLE=0, MOTOR_ACCEL, MOTOR_CRUISE, MOTOR_DECEL } MotorState;
 
@@ -29,14 +34,12 @@ typedef struct {
     uint32_t max_speed_sps;
     uint32_t accel_sps2;
 
-    volatile int32_t  pos;
-    volatile int32_t  target;
-    volatile int32_t  steps_total;
-    volatile int32_t  steps_done;
-
-    volatile uint32_t cur_speed_sps;
-    volatile uint32_t cruise_speed_sps;
-
+    volatile int32_t    pos;
+    volatile int32_t    target;
+    volatile int32_t    steps_total;
+    volatile int32_t    steps_done;
+    volatile uint32_t   cur_speed_sps;
+    volatile uint32_t   cruise_speed_sps;
     volatile MotorState state;
     volatile bool       dir;
     volatile bool       busy;

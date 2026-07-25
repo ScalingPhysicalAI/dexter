@@ -14,7 +14,6 @@
 #include "usb_device.h"
 #include "stepper.h"
 #include "gcode.h"
-#include "actuator.h"
 
 TIM_HandleTypeDef htim2;
 
@@ -31,9 +30,8 @@ int main(void)
     MX_USB_DEVICE_Init();
 
     HAL_Delay(500);         /* USB enumeration settle */
-    Stepper_Init(&htim2);   /* reconfigures TIM2 as plain counter + GPIO */
-    Actuator_Init();         /* PB10/PB11 for L298 DC actuator               */
-    GCode_Init();
+    Stepper_Init(&htim2);   /* TIM2 plain counter, X/Y on GPIOA, Z on GPIOB */
+    GCode_Init();           /* PB10=STEP_Z PB11=DIR_Z (vertical stepper)     */
 
     /* ── Startup auto-move: X axis runs 200 steps forward then back ── */
     Stepper_SetSpeed(AXIS_X, 500);          /* 500 steps/s              */
