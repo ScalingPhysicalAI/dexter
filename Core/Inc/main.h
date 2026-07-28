@@ -1,13 +1,13 @@
 /* USER CODE BEGIN Header */
 /**
   ******************************************************************************
-  * @file           : main.h
-  * @brief          : Header for main.c file.
-  *                   This file contains the common defines of the application.
+  * @file    USB_Device/CDC_Standalone/Core/Inc/main.h
+  * @author  MCD Application Team
+  * @brief   Header for main.c module
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2026 STMicroelectronics.
+  * Copyright (c) 2019 STMicroelectronics.
   * All rights reserved.
   *
   * This software is licensed under terms that can be found in the LICENSE file
@@ -27,11 +27,11 @@ extern "C" {
 #endif
 
 /* Includes ------------------------------------------------------------------*/
-#include "stm32f1xx_hal.h"
+#include "stm32l5xx_hal.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "usbd_cdc_if.h"
 /* USER CODE END Includes */
 
 /* Exported types ------------------------------------------------------------*/
@@ -49,10 +49,11 @@ extern "C" {
 
 /* USER CODE END EM */
 
-void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
-
 /* Exported functions prototypes ---------------------------------------------*/
 void Error_Handler(void);
+void MX_TIM2_Init(void);
+void MX_FDCAN1_Init(void);
+void MX_USART3_UART_Init(void);
 
 /* USER CODE BEGIN EFP */
 
@@ -61,6 +62,22 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 
 /* USER CODE BEGIN Private defines */
+#define X_STEP_Pin GPIO_PIN_0
+#define X_STEP_GPIO_Port GPIOA
+#define Y_STEP_Pin GPIO_PIN_1
+#define Y_STEP_GPIO_Port GPIOA
+#define X_DIR_Pin GPIO_PIN_4
+#define X_DIR_GPIO_Port GPIOA
+#define Y_DIR_Pin GPIO_PIN_5
+#define Y_DIR_GPIO_Port GPIOA
+#define Z_STEP_Pin GPIO_PIN_10
+#define Z_STEP_GPIO_Port GPIOB
+#define Z_DIR_Pin GPIO_PIN_11
+#define Z_DIR_GPIO_Port GPIOB
+#define Z_LIMIT_MIN_Pin GPIO_PIN_0
+#define Z_LIMIT_MIN_GPIO_Port GPIOC
+#define Z_LIMIT_MAX_Pin GPIO_PIN_1
+#define Z_LIMIT_MAX_GPIO_Port GPIOC
 
 /* USER CODE END Private defines */
 

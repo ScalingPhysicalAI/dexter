@@ -1,13 +1,13 @@
 /* USER CODE BEGIN Header */
 /**
   ******************************************************************************
-  * @file           : usbd_cdc_if.h
-  * @version        : v2.0_Cube
-  * @brief          : Header for usbd_cdc_if.c file.
+  * @file           USB_Device/CDC_Standalone/USB_Device/App/usbd_cdc_if.h
+  * @author         MCD Application Team
+  * @brief          Header for usbd_cdc_if.c file.
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2026 STMicroelectronics.
+  * Copyright (c) 2019 STMicroelectronics.
   * All rights reserved.
   *
   * This software is licensed under terms that can be found in the LICENSE file
@@ -19,7 +19,6 @@
 /* USER CODE END Header */
 
 /* Define to prevent recursive inclusion -------------------------------------*/
-
 #ifndef __USBD_CDC_IF_H__
 #define __USBD_CDC_IF_H__
 
@@ -49,8 +48,8 @@
   * @{
   */
 /* Define size for the receive and transmit buffer over CDC */
-#define APP_RX_DATA_SIZE  1024
-#define APP_TX_DATA_SIZE  1024
+#define APP_RX_DATA_SIZE  2048
+#define APP_TX_DATA_SIZE  2048
 /* USER CODE BEGIN EXPORTED_DEFINES */
 
 /* USER CODE END EXPORTED_DEFINES */
@@ -107,9 +106,6 @@ extern USBD_CDC_ItfTypeDef USBD_Interface_fops_FS;
   */
 
 uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len);
-void    USB_CDC_DrainRX(void);
-void    USB_CDC_TxWrite(const char *str, uint16_t len);
-void    USB_CDC_TxPoll(void);
 
 /* USER CODE BEGIN EXPORTED_FUNCTIONS */
 

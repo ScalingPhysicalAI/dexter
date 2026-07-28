@@ -1,13 +1,13 @@
 /* USER CODE BEGIN Header */
 /**
   ******************************************************************************
-  * @file           : usbd_conf.h
-  * @version        : v2.0_Cube
-  * @brief          : Header for usbd_conf.c file.
+  * @file           USB_Device/CDC_Standalone/USB_Device/Target/usbd_conf.h
+  * @author         MCD Application Team
+  * @brief          Header for usbd_conf.c file.
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2026 STMicroelectronics.
+  * Copyright (c) 2019 STMicroelectronics.
   * All rights reserved.
   *
   * This software is licensed under terms that can be found in the LICENSE file
@@ -30,15 +30,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "main.h"
-#include "stm32f1xx.h"
-#include "stm32f1xx_hal.h"
+#include "stm32l5xx.h"
+#include "stm32l5xx_hal.h"
 
 /* USER CODE BEGIN INCLUDE */
 
 /* USER CODE END INCLUDE */
 
 /** @addtogroup USBD_OTG_DRIVER
+  * @brief Driver for Usb device.
   * @{
   */
 
@@ -52,6 +52,9 @@
   * @{
   */
 
+/* Private variables ---------------------------------------------------------*/
+/* USER CODE BEGIN PV */
+/* USER CODE END PV */
 /**
   * @}
   */
@@ -62,17 +65,17 @@
   */
 
 /*---------- -----------*/
-#define USBD_MAX_NUM_INTERFACES     1
+#define USBD_MAX_NUM_INTERFACES     1U
 /*---------- -----------*/
-#define USBD_MAX_NUM_CONFIGURATION     1
+#define USBD_MAX_NUM_CONFIGURATION     1U
 /*---------- -----------*/
-#define USBD_MAX_STR_DESC_SIZ     512
+#define USBD_MAX_STR_DESC_SIZ     100U
 /*---------- -----------*/
-#define USBD_DEBUG_LEVEL     0
+#define USBD_DEBUG_LEVEL     0U
 /*---------- -----------*/
-#define USBD_SELF_POWERED     1
+#define USBD_LPM_ENABLED     0U
 /*---------- -----------*/
-#define MAX_STATIC_ALLOC_SIZE     512
+#define USBD_SELF_POWERED     1U
 
 /****************************************/
 /* #define for FS and HS identification */
@@ -88,27 +91,20 @@
   */
 
 /* Memory management macros */
-
 /** Alias for memory allocation. */
-#define USBD_malloc         (uint32_t *)USBD_static_malloc
+#define USBD_malloc         (void *)USBD_static_malloc
 
 /** Alias for memory release. */
 #define USBD_free           USBD_static_free
 
 /** Alias for memory set. */
-#define USBD_memset         /* Not used */
+#define USBD_memset         memset
 
 /** Alias for memory copy. */
-#define USBD_memcpy         /* Not used */
+#define USBD_memcpy         memcpy
 
 /** Alias for delay. */
 #define USBD_Delay          HAL_Delay
-
-/* For footprint reasons and since only one allocation is handled in the HID class
-   driver, the malloc/free is changed into a static allocation method */
-void *USBD_static_malloc(uint32_t size);
-void USBD_static_free(void *p);
-
 /* DEBUG macros */
 
 #if (USBD_DEBUG_LEVEL > 0)
@@ -116,24 +112,24 @@ void USBD_static_free(void *p);
                             printf("\n");
 #else
 #define USBD_UsrLog(...)
-#endif
+#endif /* (USBD_DEBUG_LEVEL > 0U) */
 
 #if (USBD_DEBUG_LEVEL > 1)
 
-#define USBD_ErrLog(...)    printf("ERROR: ") ;\
+#define USBD_ErrLog(...)    printf("ERROR: ");\
                             printf(__VA_ARGS__);\
                             printf("\n");
 #else
 #define USBD_ErrLog(...)
-#endif
+#endif /* (USBD_DEBUG_LEVEL > 1U) */
 
 #if (USBD_DEBUG_LEVEL > 2)
-#define USBD_DbgLog(...)    printf("DEBUG : ") ;\
+#define USBD_DbgLog(...)    printf("DEBUG : ");\
                             printf(__VA_ARGS__);\
                             printf("\n");
 #else
 #define USBD_DbgLog(...)
-#endif
+#endif /* (USBD_DEBUG_LEVEL > 2U) */
 
 /**
   * @}
@@ -154,6 +150,8 @@ void USBD_static_free(void *p);
   */
 
 /* Exported functions -------------------------------------------------------*/
+void *USBD_static_malloc(uint32_t size);
+void USBD_static_free(void *p);
 
 /**
   * @}
