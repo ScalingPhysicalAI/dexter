@@ -11,13 +11,68 @@ STM32CubeL5 V1.6.0.
 - Z minimum/maximum limits: PC0/PC1, normally closed, pull-up enabled
 - FDCAN1 RX/TX: PB8/PB9, classic CAN
 - USB CDC DM/DP: PA11/PA12
-- TIM2: 10 kHz motion interrupt from the 110 MHz timer clock
+- LPUART1 debug TX/RX: PG7/PG8, 115200 8-N-1
+- TIM2: 50 kHz coordinated-motion interrupt from the 110 MHz timer clock
 
 The CAN pins require an external CAN transceiver. Install 120 ohm termination
 only at the two physical ends of the CAN bus.
 
 `can_interface.c` accepts standard 11-bit CAN frames and provides an eight-frame
 RX FIFO and TX FIFO. `limit_switches.c` treats HIGH as tripped/open wire.
+
+Limit input polarity is configurable over USB CDC. Use `$23=0` for active-low,
+`$23=1` for active-high, or `$23` to read the current value. The default is
+active-high, matching normally-closed switches with pull-ups where an open wire
+or actuated switch reads HIGH.
+The same commands are accepted from USB CDC and the LPUART1 debug serial port;
+the response is returned through the interface that issued the command. LPUART1
+uses interrupt-driven receive and transmit (no DMA): PG7 and PG8 use AF8,
+leaving PB10/PB11 available for the Z motor. Firmware enables the STM32L552
+VDDIO2 domain required by these GPIOG pins. A compact command guide is printed
+on both ports at boot and can be printed again with `HELP`.
+
+## Motion and commands
+
+`G0` and `G1` support X, Y, and Z in the same command. A shared DDA/Bresenham
+scheduler starts the selected axes together and completes them on the same
+master interpolation tick. For example:
+
+```text
+G0 X1000 Y1000 Z1000
+```
+
+Core commands include `G0`, `G1`, `G4`, `G28`, `G90`, `G91`, `G92`, `M17`,
+`M18`, `M84`, `M112`, `?`, `!`, `~`, `$H`, `$X`, and `HELP`. Units are raw
+steps by default; `$14=1` enables calibrated millimetres.
+
+Direction and limit settings are runtime settings:
+
+- `$20=0/1`: normal/inverted X positive direction
+- `$21=0/1`: normal/inverted Y positive direction
+- `$22=0/1`: normal/inverted Z positive direction
+- `$23=0/1`: active-low/active-high Z limit inputs
+- `$20`, `$21`, `$22`, or `$23`: query the individual setting
+- `$`: print all motion and calibration settings
+
+The Z minimum and maximum inputs are checked in the timer ISR before every Z
+step. A limit event stops the coordinated move and reports `ALARM:Z limit` on
+both command interfaces. Clear it with `$X` after moving the mechanism to a
+safe condition.
+
+The `?` status response includes `LimZ:min,max`, making it possible to verify
+both switches and the selected polarity before energizing the motor drivers.
+
+## Cycle engine and host scripts
+
+The built-in cycle engine provides `INIT`, `KITCHEN`, `LIVING_ROOM`, `BEDROOM`,
+`DOOR`, `CHARGE`, `PATROL`, and `HEIGHT_CAL` scripts. Use `LIST`, `RUN <name>`,
+`MACRO <name>`, and `STOP`. It runs non-blocking and waits for each coordinated
+move or dwell before advancing.
+
+The desktop controller in `Tools/humanoid_control.py` supports USB CDC or
+LPUART1, XYZ jog, synchronized targets, macro control, queued multi-line
+scripts, settings, live status, and emergency stop. Installation instructions
+are in `Tools/README.md`.
 
 Open `dexter_l552.ioc` or import this folder as an existing STM32CubeIDE
 project. Regenerating from the IOC may update generated HAL and USB files; keep

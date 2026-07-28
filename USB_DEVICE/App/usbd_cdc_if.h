@@ -106,6 +106,9 @@ extern USBD_CDC_ItfTypeDef USBD_Interface_fops_FS;
   */
 
 uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len);
+void USB_CDC_TxWrite(const char *data, uint16_t length);
+void USB_CDC_TxPoll(void);
+void USB_CDC_RxPoll(void);
 
 /* USER CODE BEGIN EXPORTED_FUNCTIONS */
 
