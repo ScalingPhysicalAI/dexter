@@ -22,14 +22,18 @@ only at the two physical ends of the CAN bus.
 RX FIFO and TX FIFO. `limit_switches.c` treats HIGH as tripped/open wire.
 
 CAN is also a complete command interface at 1 Mbit/s. It uses standard 11-bit
-ID `0x600` for received command bytes and ID `0x601` for response bytes. Each
+ID `0x600` for received command bytes and ID `0x601` for response bytes by
+default. Query the active IDs with `CANID?`, change them at runtime with
+`CANID <RX> <TX>`, and restore defaults with `CANID DEFAULT`. A CAN-originated
+change is acknowledged on the old response ID before the new IDs become active.
+Runtime changes return to the compile-time defaults after reset. Each
 classic-CAN frame carries 1-8 raw ASCII bytes; commands can span multiple frames
 and must end with `\n`. Responses are split into 8-byte frames and retain the
 same CR/LF text used by USB and LPUART1. For example, transmit the bytes of
 `G0 X1000 Y1000 Z1000\n` across consecutive ID `0x600` frames and reassemble
 the ID `0x601` response. Only one CAN command sender should use the stream at a
-time. Override `CAN_COMMAND_RX_ID` and `CAN_COMMAND_TX_ID` at compile time if
-different IDs are required.
+time. Override `CAN_COMMAND_RX_ID` and `CAN_COMMAND_TX_ID` at compile time to
+change the boot defaults.
 
 Limit input polarity is configurable over either command port. Use `$23=0` for
 active-low, `$23=1` for active-high, or `$23` to read the current polarity. The
@@ -102,6 +106,10 @@ are in `Tools/README.md`.
 Open `dexter_l552.ioc` or import this folder as an existing STM32CubeIDE
 project. Regenerating from the IOC may update generated HAL and USB files; keep
 the user application modules in the marked USER CODE sections.
+
+Project documentation is in [`Doc`](Doc/connection_overview.md), including the
+connection image, requirements, development phases, completed feature matrix,
+and suggested next features.
 
 In STM32CubeIDE use **File > Import > General > Existing Projects into
 Workspace**, select this directory, and import `Dexter_STM32L552ZET6`. Both

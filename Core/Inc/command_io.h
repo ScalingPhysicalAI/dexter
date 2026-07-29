@@ -24,5 +24,7 @@ typedef enum {
 void CommandIO_Init(UART_HandleTypeDef *huart);
 void CommandIO_Poll(void);
 void CommandIO_Send(CommandSource source, const char *data, uint16_t length);
+bool CommandIO_SetCanIds(uint16_t receive_id, uint16_t transmit_id);
+void CommandIO_GetCanIds(uint16_t *receive_id, uint16_t *transmit_id);
 
 #endif

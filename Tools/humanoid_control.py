@@ -196,6 +196,24 @@ class DexterWindow(QMainWindow):
         query = QPushButton("Read all settings")
         query.clicked.connect(lambda: self.send("$"))
         layout.addWidget(query)
+
+        can_ids = QGroupBox("CAN command IDs (runtime)")
+        can_form = QGridLayout(can_ids)
+        self.can_rx_id = QLineEdit("0x600")
+        self.can_tx_id = QLineEdit("0x601")
+        set_can_ids = QPushButton("Set CAN IDs")
+        set_can_ids.clicked.connect(lambda: self.send(
+            f"CANID {self.can_rx_id.text()} {self.can_tx_id.text()}"
+        ))
+        read_can_ids = QPushButton("Read CAN IDs")
+        read_can_ids.clicked.connect(lambda: self.send("CANID?"))
+        can_form.addWidget(QLabel("L5 receive ID"), 0, 0)
+        can_form.addWidget(self.can_rx_id, 0, 1)
+        can_form.addWidget(QLabel("L5 response ID"), 1, 0)
+        can_form.addWidget(self.can_tx_id, 1, 1)
+        can_form.addWidget(set_can_ids, 2, 0)
+        can_form.addWidget(read_can_ids, 2, 1)
+        layout.addWidget(can_ids)
         layout.addStretch()
         return tab
 
@@ -320,6 +338,10 @@ class DexterWindow(QMainWindow):
                 self.macro_list.addItem(name)
         elif line.startswith("<"):
             self.state_label.setText(line)
+        elif line.startswith("CANID RX=") and " TX=" in line:
+            receive_id, transmit_id = line[9:].split(" TX=", 1)
+            self.can_rx_id.setText(receive_id.strip())
+            self.can_tx_id.setText(transmit_id.strip())
 
     def closeEvent(self, event):
         if self.serial_port and self.serial_port.is_open:

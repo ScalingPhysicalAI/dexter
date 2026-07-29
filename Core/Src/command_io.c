@@ -23,6 +23,11 @@ static volatile bool s_tx_busy;
 static uint8_t s_can_tx_ring[CAN_TX_RING_SIZE];
 static uint16_t s_can_tx_head;
 static uint16_t s_can_tx_tail;
+static uint16_t s_can_receive_id;
+static uint16_t s_can_transmit_id;
+static uint16_t s_can_pending_receive_id;
+static uint16_t s_can_pending_transmit_id;
+static bool s_can_id_change_pending;
 
 void CommandIO_Init(UART_HandleTypeDef *huart)
 {
@@ -30,9 +35,35 @@ void CommandIO_Init(UART_HandleTypeDef *huart)
     s_rx_head = s_rx_tail = 0U;
     s_tx_head = s_tx_tail = 0U;
     s_can_tx_head = s_can_tx_tail = 0U;
+    s_can_receive_id = CAN_COMMAND_RX_ID;
+    s_can_transmit_id = CAN_COMMAND_TX_ID;
+    s_can_pending_receive_id = CAN_COMMAND_RX_ID;
+    s_can_pending_transmit_id = CAN_COMMAND_TX_ID;
+    s_can_id_change_pending = false;
     s_tx_busy = false;
     if (HAL_UART_Receive_IT(s_uart, &s_rx_byte, 1U) != HAL_OK) {
         Error_Handler();
+    }
+}
+
+bool CommandIO_SetCanIds(uint16_t receive_id, uint16_t transmit_id)
+{
+    if (receive_id > 0x7FFU || transmit_id > 0x7FFU || receive_id == transmit_id) {
+        return false;
+    }
+    s_can_pending_receive_id = receive_id;
+    s_can_pending_transmit_id = transmit_id;
+    s_can_id_change_pending = true;
+    return true;
+}
+
+void CommandIO_GetCanIds(uint16_t *receive_id, uint16_t *transmit_id)
+{
+    if (receive_id != NULL) {
+        *receive_id = s_can_id_change_pending ? s_can_pending_receive_id : s_can_receive_id;
+    }
+    if (transmit_id != NULL) {
+        *transmit_id = s_can_id_change_pending ? s_can_pending_transmit_id : s_can_transmit_id;
     }
 }
 
@@ -81,7 +112,7 @@ static void can_rx_poll(void)
     uint8_t data[CAN_FRAME_MAX_BYTES];
     uint8_t length;
     while (CAN_Receive(&standard_id, data, &length)) {
-        if (standard_id != CAN_COMMAND_RX_ID) continue;
+        if (standard_id != s_can_receive_id) continue;
         for (uint8_t index = 0U; index < length; ++index) {
             GCode_PutCharFrom(COMMAND_SOURCE_CAN, (char)data[index]);
         }
@@ -90,7 +121,14 @@ static void can_rx_poll(void)
 
 static void can_tx_poll(void)
 {
-    if (s_can_tx_tail == s_can_tx_head) return;
+    if (s_can_tx_tail == s_can_tx_head) {
+        if (s_can_id_change_pending) {
+            s_can_receive_id = s_can_pending_receive_id;
+            s_can_transmit_id = s_can_pending_transmit_id;
+            s_can_id_change_pending = false;
+        }
+        return;
+    }
 
     uint8_t data[CAN_FRAME_MAX_BYTES];
     uint8_t length = 0U;
@@ -99,7 +137,7 @@ static void can_tx_poll(void)
         data[length++] = s_can_tx_ring[cursor];
         cursor = (uint16_t)((cursor + 1U) & (CAN_TX_RING_SIZE - 1U));
     }
-    if (CAN_Send(CAN_COMMAND_TX_ID, data, length)) s_can_tx_tail = cursor;
+    if (CAN_Send(s_can_transmit_id, data, length)) s_can_tx_tail = cursor;
 }
 
 void CommandIO_Poll(void)

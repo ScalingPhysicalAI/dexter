@@ -52,7 +52,7 @@ static volatile bool s_estop_report_pending;
 
 static const char s_command_help[] =
     "\r\n=== Dexter STM32L552ZET6 motion controller ===\r\n"
-    "Command ports: USB CDC, LPUART1 IRQ, or CAN IDs 600/601\r\n"
+    "Command ports: USB CDC, LPUART1 IRQ, or CAN (CANID? to query)\r\n"
     "Motion: G0/G1 X.. Y.. Z.. [F..] (XYZ synchronized)\r\n"
     "Modes: G90 absolute, G91 relative, G92 set position, G4 P.. dwell\r\n"
     "Control: ? status, ! hold, ~ resume, ESTOP/M112, CLEAR ALARM\r\n"
@@ -63,6 +63,7 @@ static const char s_command_help[] =
 #endif
     "Direction: DIR X|Y|Z NORMAL|REVERSE (or $20/$21/$22=0|1)\r\n"
     "Limits: LIMIT ON|OFF, $23=polarity, $24=enable (default OFF)\r\n"
+    "CAN IDs: CANID <RX> <TX>, CANID?, CANID DEFAULT\r\n"
     "Cycles: LIST, RUN <name>, MACRO <name>, STOP\r\n"
     "Type HELP to print this guide again.\r\n"
     "ready\r\n";
@@ -96,6 +97,17 @@ static char *append_i32(char *out, int32_t value)
         return append_u32(out, (uint32_t)(-(int64_t)value));
     }
     return append_u32(out, (uint32_t)value);
+}
+
+static char *append_can_id(char *out, uint16_t value)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    *out++ = '0';
+    *out++ = 'x';
+    *out++ = hex[(value >> 8U) & 0x0FU];
+    *out++ = hex[(value >> 4U) & 0x0FU];
+    *out++ = hex[value & 0x0FU];
+    return out;
 }
 
 static void send_value(const char *prefix, int32_t value, const char *suffix)
@@ -375,6 +387,100 @@ static bool parse_unsigned(const char *text, uint32_t *value)
     return true;
 }
 
+static bool parse_can_id_token(const char **text, uint16_t *value)
+{
+    const char *cursor = *text;
+    while (*cursor == ' ' || *cursor == '\t') ++cursor;
+    uint32_t base = 10U;
+    if (cursor[0] == '0' && cursor[1] == 'X') {
+        base = 16U;
+        cursor += 2;
+    }
+
+    uint32_t parsed = 0U;
+    bool found = false;
+    while (*cursor != '\0' && *cursor != ' ' && *cursor != '\t') {
+        uint8_t digit;
+        if (*cursor >= '0' && *cursor <= '9') digit = (uint8_t)(*cursor - '0');
+        else if (base == 16U && *cursor >= 'A' && *cursor <= 'F') {
+            digit = (uint8_t)(*cursor - 'A' + 10);
+        } else {
+            return false;
+        }
+        if (digit >= base) return false;
+        parsed = parsed * base + digit;
+        if (parsed > 0x7FFU) return false;
+        found = true;
+        ++cursor;
+    }
+    if (!found) return false;
+    *value = (uint16_t)parsed;
+    *text = cursor;
+    return true;
+}
+
+static void send_can_ids(void)
+{
+    uint16_t receive_id;
+    uint16_t transmit_id;
+    char buffer[40];
+    char *out = buffer;
+    CommandIO_GetCanIds(&receive_id, &transmit_id);
+    out = append_text(out, "CANID RX=");
+    out = append_can_id(out, receive_id);
+    out = append_text(out, " TX=");
+    out = append_can_id(out, transmit_id);
+    out = append_text(out, "\r\n");
+    *out = '\0';
+    GCode_Send(buffer);
+}
+
+static void parse_can_id_command(const char *line)
+{
+    const char *cursor = line + 5;
+    while (*cursor == ' ' || *cursor == '\t') ++cursor;
+    if (*cursor == '\0' || strcmp(cursor, "?") == 0) {
+        send_can_ids();
+        send_ok();
+        return;
+    }
+
+    uint16_t receive_id;
+    uint16_t transmit_id;
+    if (strcmp(cursor, "DEFAULT") == 0) {
+        receive_id = CAN_COMMAND_RX_ID;
+        transmit_id = CAN_COMMAND_TX_ID;
+    } else {
+        if (!parse_can_id_token(&cursor, &receive_id) ||
+            !parse_can_id_token(&cursor, &transmit_id)) {
+            send_error("CANID needs RX TX (0x000..0x7FF)");
+            return;
+        }
+        while (*cursor == ' ' || *cursor == '\t') ++cursor;
+        if (*cursor != '\0') {
+            send_error("CANID needs exactly two IDs");
+            return;
+        }
+    }
+    if (receive_id == transmit_id) {
+        send_error("CAN RX and TX IDs must differ");
+        return;
+    }
+
+    /* Queue the reply on the old TX ID, then switch after the CAN queue drains. */
+    char buffer[40];
+    char *out = buffer;
+    out = append_text(out, "CANID RX=");
+    out = append_can_id(out, receive_id);
+    out = append_text(out, " TX=");
+    out = append_can_id(out, transmit_id);
+    out = append_text(out, "\r\n");
+    *out = '\0';
+    GCode_Send(buffer);
+    send_ok();
+    (void)CommandIO_SetCanIds(receive_id, transmit_id);
+}
+
 static void parse_setting(const char *line)
 {
     if (line[1] == '\0') { print_settings(); return; }
@@ -524,6 +630,8 @@ static bool execute_line(CommandSource source, char *line, bool script)
     if (*line == '\0') { if (!script) send_ok(); return true; }
 
     if (strcmp(line, "HELP") == 0) { GCode_Send(s_command_help); return true; }
+    if (strcmp(line, "CANID") == 0 || strcmp(line, "CANID?") == 0 ||
+        strncmp(line, "CANID ", 6U) == 0) { parse_can_id_command(line); return true; }
     if (strcmp(line, "ESTOP") == 0) { trigger_estop_command(); return true; }
     if (strcmp(line, "ESTOP?") == 0) {
         send_value("ESTOP=", s_estop_latched ? 1 : 0, " ;latched\r\n");
