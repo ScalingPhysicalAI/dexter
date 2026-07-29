@@ -21,13 +21,23 @@ only at the two physical ends of the CAN bus.
 `can_interface.c` accepts standard 11-bit CAN frames and provides an eight-frame
 RX FIFO and TX FIFO. `limit_switches.c` treats HIGH as tripped/open wire.
 
+CAN is also a complete command interface at 1 Mbit/s. It uses standard 11-bit
+ID `0x600` for received command bytes and ID `0x601` for response bytes. Each
+classic-CAN frame carries 1-8 raw ASCII bytes; commands can span multiple frames
+and must end with `\n`. Responses are split into 8-byte frames and retain the
+same CR/LF text used by USB and LPUART1. For example, transmit the bytes of
+`G0 X1000 Y1000 Z1000\n` across consecutive ID `0x600` frames and reassemble
+the ID `0x601` response. Only one CAN command sender should use the stream at a
+time. Override `CAN_COMMAND_RX_ID` and `CAN_COMMAND_TX_ID` at compile time if
+different IDs are required.
+
 Limit input polarity is configurable over either command port. Use `$23=0` for
 active-low, `$23=1` for active-high, or `$23` to read the current polarity. The
 default polarity is active-high, matching normally-closed switches with pull-ups
 where an open wire or actuated switch reads HIGH. Limit enforcement is disabled
 at every boot; use `LIMIT ON` or `$24=1` to enable it and `LIMIT OFF` or `$24=0`
 to disable it.
-The same commands are accepted from USB CDC and the LPUART1 debug serial port;
+The same commands are accepted from USB CDC, LPUART1, and the CAN ASCII stream;
 the response is returned through the interface that issued the command. LPUART1
 uses interrupt-driven receive and transmit (no DMA): PG7 and PG8 use AF8,
 leaving PB10/PB11 available for the Z motor. Firmware enables the STM32L552

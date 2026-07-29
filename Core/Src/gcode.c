@@ -26,7 +26,7 @@ typedef struct {
 } QueuedCommand;
 
 static struct {
-    InputBuffer input[2];
+    InputBuffer input[COMMAND_SOURCE_COUNT];
     DistanceMode distance_mode;
     uint32_t feed_sps;
     uint32_t rapid_sps;
@@ -52,7 +52,7 @@ static volatile bool s_estop_report_pending;
 
 static const char s_command_help[] =
     "\r\n=== Dexter STM32L552ZET6 motion controller ===\r\n"
-    "Command ports: USB CDC or LPUART1 IRQ, 115200 8-N-1\r\n"
+    "Command ports: USB CDC, LPUART1 IRQ, or CAN IDs 600/601\r\n"
     "Motion: G0/G1 X.. Y.. Z.. [F..] (XYZ synchronized)\r\n"
     "Modes: G90 absolute, G91 relative, G92 set position, G4 P.. dwell\r\n"
     "Control: ? status, ! hold, ~ resume, ESTOP/M112, CLEAR ALARM\r\n"
@@ -158,6 +158,7 @@ static void enter_estop_alarm(void)
     gc.alarm = true;
     GCode_SendTo(COMMAND_SOURCE_USB, "ALARM:E-STOP\r\n");
     GCode_SendTo(COMMAND_SOURCE_UART, "ALARM:E-STOP\r\n");
+    GCode_SendTo(COMMAND_SOURCE_CAN, "ALARM:E-STOP\r\n");
 }
 
 static void trigger_estop_command(void)
@@ -688,7 +689,8 @@ void GCode_Init(void)
 
 void GCode_PutCharFrom(CommandSource source, char character)
 {
-    InputBuffer *input = &gc.input[source == COMMAND_SOURCE_UART ? 1U : 0U];
+    if ((uint8_t)source >= (uint8_t)COMMAND_SOURCE_COUNT) return;
+    InputBuffer *input = &gc.input[(uint8_t)source];
     if (character == '\r' || character == '\n') {
         if (input->length != 0U) {
             input->line[input->length] = '\0';
@@ -718,6 +720,7 @@ void GCode_Poll(void)
         gc.alarm = true;
         GCode_SendTo(COMMAND_SOURCE_USB, "ALARM:Z limit\r\n");
         GCode_SendTo(COMMAND_SOURCE_UART, "ALARM:Z limit\r\n");
+        GCode_SendTo(COMMAND_SOURCE_CAN, "ALARM:Z limit\r\n");
     }
     CycleEngine_Poll();
     if (!command_processing_busy() && gc.queue_tail != gc.queue_head) {
