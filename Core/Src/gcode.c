@@ -1,6 +1,7 @@
 #include "gcode.h"
 #include "cycle_engine.h"
 #include "limit_switches.h"
+#include "main.h"
 #include "stepper.h"
 #include <stdint.h>
 #include <string.h>
@@ -46,15 +47,22 @@ static struct {
 } gc;
 
 static CommandSource s_response_source = COMMAND_SOURCE_USB;
+static volatile bool s_estop_latched;
+static volatile bool s_estop_report_pending;
 
 static const char s_command_help[] =
     "\r\n=== Dexter STM32L552ZET6 motion controller ===\r\n"
     "Command ports: USB CDC or LPUART1 IRQ, 115200 8-N-1\r\n"
     "Motion: G0/G1 X.. Y.. Z.. [F..] (XYZ synchronized)\r\n"
     "Modes: G90 absolute, G91 relative, G92 set position, G4 P.. dwell\r\n"
-    "Control: ? status, ! hold, ~ resume, M112 emergency stop, $X unlock\r\n"
-    "Settings: $ list, $20/$21/$22=0|1 axis direction invert\r\n"
-    "          $23=0|1 Z-limit active-low/active-high\r\n"
+    "Control: ? status, ! hold, ~ resume, ESTOP/M112, CLEAR ALARM\r\n"
+#if ESTOP_BUTTON_ENABLE
+    "E-stop button: PC2 active-low; ESTOP RESET only after release\r\n"
+#else
+    "E-stop button: disabled by ESTOP_BUTTON_ENABLE=0\r\n"
+#endif
+    "Direction: DIR X|Y|Z NORMAL|REVERSE (or $20/$21/$22=0|1)\r\n"
+    "Limits: LIMIT ON|OFF, $23=polarity, $24=enable (default OFF)\r\n"
     "Cycles: LIST, RUN <name>, MACRO <name>, STOP\r\n"
     "Type HELP to print this guide again.\r\n"
     "ready\r\n";
@@ -120,6 +128,77 @@ static void send_error(const char *message)
     GCode_Send("error:");
     GCode_Send(message);
     GCode_Send("\r\n");
+}
+
+static bool estop_button_active(void)
+{
+#if ESTOP_BUTTON_ENABLE
+    bool pin_high = HAL_GPIO_ReadPin(ESTOP_GPIO_Port, ESTOP_Pin) == GPIO_PIN_SET;
+    return ESTOP_BUTTON_ACTIVE_LOW ? !pin_high : pin_high;
+#else
+    return false;
+#endif
+}
+
+static bool take_estop_report_pending(void)
+{
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    bool pending = s_estop_report_pending;
+    s_estop_report_pending = false;
+    if (primask == 0U) __enable_irq();
+    return pending;
+}
+
+static void enter_estop_alarm(void)
+{
+    CycleEngine_Stop();
+    gc.dwelling = false;
+    gc.queue_head = gc.queue_tail = 0U;
+    gc.alarm = true;
+    GCode_SendTo(COMMAND_SOURCE_USB, "ALARM:E-STOP\r\n");
+    GCode_SendTo(COMMAND_SOURCE_UART, "ALARM:E-STOP\r\n");
+}
+
+static void trigger_estop_command(void)
+{
+    Stepper_StopAll();
+    s_estop_latched = true;
+    s_estop_report_pending = true;
+    (void)take_estop_report_pending();
+    enter_estop_alarm();
+}
+
+void GCode_EStopFromISR(void)
+{
+#if ESTOP_BUTTON_ENABLE
+    if (!estop_button_active()) return;
+    Stepper_EmergencyStopFromISR();
+    s_estop_latched = true;
+    s_estop_report_pending = true;
+#endif
+}
+
+static bool clear_estop_latch(void)
+{
+    if (estop_button_active()) return false;
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    s_estop_latched = false;
+    s_estop_report_pending = false;
+    if (primask == 0U) __enable_irq();
+    return true;
+}
+
+static void unlock_alarms(void)
+{
+    if (s_estop_latched && !clear_estop_latch()) {
+        send_error("E-stop button active");
+        return;
+    }
+    gc.alarm = false;
+    Stepper_ClearLimitStopped();
+    send_ok();
 }
 
 static void uppercase(char *text)
@@ -219,7 +298,7 @@ static char *append_position(char *out, int32_t steps, uint8_t axis)
 
 static void send_status(void)
 {
-    char buffer[160];
+    char buffer[192];
     char *out = buffer;
     const char *state = gc.alarm ? "Alarm" : gc.paused ? "Hold" : Stepper_IsBusy() ? "Run" : "Idle";
     out = append_text(out, "<");
@@ -240,7 +319,11 @@ static void send_status(void)
     *out++ = Limit_ZMinActive() ? '1' : '0';
     *out++ = ',';
     *out++ = Limit_ZMaxActive() ? '1' : '0';
+    out = append_text(out, "|LimEn:");
+    *out++ = Limit_GetEnabled() ? '1' : '0';
     if (Stepper_LimitStopped()) out = append_text(out, "|Limit:Z");
+    out = append_text(out, "|EStop:");
+    *out++ = s_estop_latched ? '1' : '0';
     const char *macro = CycleEngine_GetCurrentName();
     if (*macro != '\0') {
         out = append_text(out, "|CE:");
@@ -276,6 +359,7 @@ static void print_settings(void)
     send_value("$21=", Stepper_GetDirectionInverted(AXIS_Y) ? 1 : 0, " ;Y direction invert\r\n");
     send_value("$22=", Stepper_GetDirectionInverted(AXIS_Z) ? 1 : 0, " ;Z direction invert\r\n");
     send_value("$23=", Limit_GetActiveHigh() ? 1 : 0, " ;limit active-high\r\n");
+    send_value("$24=", Limit_GetEnabled() ? 1 : 0, " ;Z limits enabled\r\n");
     send_ok();
 }
 
@@ -294,9 +378,7 @@ static void parse_setting(const char *line)
 {
     if (line[1] == '\0') { print_settings(); return; }
     if (strcmp(line, "$X") == 0) {
-        gc.alarm = false;
-        Stepper_ClearLimitStopped();
-        send_ok();
+        unlock_alarms();
         return;
     }
     if (strcmp(line, "$H") == 0) {
@@ -309,6 +391,7 @@ static void parse_setting(const char *line)
     if (strcmp(line, "$21") == 0) { send_value("$21=", Stepper_GetDirectionInverted(AXIS_Y) ? 1 : 0, " ;Y direction invert\r\n"); send_ok(); return; }
     if (strcmp(line, "$22") == 0) { send_value("$22=", Stepper_GetDirectionInverted(AXIS_Z) ? 1 : 0, " ;Z direction invert\r\n"); send_ok(); return; }
     if (strcmp(line, "$23") == 0) { send_value("$23=", Limit_GetActiveHigh() ? 1 : 0, " ;limit active-high\r\n"); send_ok(); return; }
+    if (strcmp(line, "$24") == 0) { send_value("$24=", Limit_GetEnabled() ? 1 : 0, " ;Z limits enabled\r\n"); send_ok(); return; }
 
     const char *cursor = line + 1;
     uint32_t number = 0U;
@@ -318,7 +401,7 @@ static void parse_setting(const char *line)
     uint32_t value;
     if (!parse_unsigned(cursor, &value)) { send_error("bad value"); return; }
 
-    if (Stepper_IsBusy() && number >= 20U && number <= 23U) { send_error("busy"); return; }
+    if (Stepper_IsBusy() && number >= 20U && number <= 24U) { send_error("busy"); return; }
     if ((number == 0U || number == 1U || number == 4U || number == 5U || number == 6U) &&
         (value < STEPPER_MIN_SPEED_SPS || value > STEPPER_MAX_SPEED_SPS)) {
         send_error("speed range 20..10000"); return;
@@ -330,7 +413,7 @@ static void parse_setting(const char *line)
          number == 15U || number == 16U) && value == 0U) {
         send_error("calibration must be >0"); return;
     }
-    if ((number == 14U || (number >= 20U && number <= 23U)) && value > 1U) {
+    if ((number == 14U || (number >= 20U && number <= 24U)) && value > 1U) {
         send_error("boolean must be 0 or 1"); return;
     }
     switch (number) {
@@ -353,6 +436,7 @@ static void parse_setting(const char *line)
         case 21: Stepper_SetDirectionInverted(AXIS_Y, value != 0U); break;
         case 22: Stepper_SetDirectionInverted(AXIS_Z, value != 0U); break;
         case 23: Limit_SetActiveHigh(value != 0U); break;
+        case 24: Limit_SetEnabled(value != 0U); break;
         default: send_error("unknown setting"); return;
     }
     send_ok();
@@ -360,7 +444,7 @@ static void parse_setting(const char *line)
 
 static bool start_move(int32_t target[NUM_AXES], uint32_t speed)
 {
-    if (gc.alarm || gc.paused) { send_error("hold/alarm"); return false; }
+    if (s_estop_latched || gc.alarm || gc.paused) { send_error("hold/alarm"); return false; }
     if (Stepper_IsBusy()) { send_error("busy"); return false; }
     int32_t machine_target[NUM_AXES];
     for (uint8_t axis = 0U; axis < NUM_AXES; ++axis) machine_target[axis] = target[axis] - gc.offset[axis];
@@ -368,6 +452,66 @@ static bool start_move(int32_t target[NUM_AXES], uint32_t speed)
     for (uint8_t axis = 0U; axis < NUM_AXES; ++axis) gc.work_position[axis] = target[axis] + gc.offset[axis];
     send_ok();
     return true;
+}
+
+static void print_direction_settings(void)
+{
+    send_value("X=", Stepper_GetDirectionInverted(AXIS_X) ? 1 : 0, " ;0=normal 1=reverse\r\n");
+    send_value("Y=", Stepper_GetDirectionInverted(AXIS_Y) ? 1 : 0, " ;0=normal 1=reverse\r\n");
+    send_value("Z=", Stepper_GetDirectionInverted(AXIS_Z) ? 1 : 0, " ;0=normal 1=reverse\r\n");
+    send_ok();
+}
+
+static void parse_direction_command(const char *line)
+{
+    const char *cursor = line + 4;
+    while (*cursor == ' ' || *cursor == '\t') ++cursor;
+
+    uint8_t axis;
+    if (*cursor == 'X') axis = AXIS_X;
+    else if (*cursor == 'Y') axis = AXIS_Y;
+    else if (*cursor == 'Z') axis = AXIS_Z;
+    else { send_error("DIR needs X, Y, or Z"); return; }
+
+    ++cursor;
+    while (*cursor == ' ' || *cursor == '\t') ++cursor;
+    if (*cursor == '\0' || strcmp(cursor, "?") == 0) {
+        send_value("DIR=", Stepper_GetDirectionInverted(axis) ? 1 : 0,
+                   " ;0=normal 1=reverse\r\n");
+        send_ok();
+        return;
+    }
+    if (Stepper_IsBusy()) { send_error("busy"); return; }
+
+    bool inverted;
+    if (strcmp(cursor, "NORMAL") == 0 || strcmp(cursor, "0") == 0) inverted = false;
+    else if (strcmp(cursor, "REVERSE") == 0 || strcmp(cursor, "1") == 0) inverted = true;
+    else if (strcmp(cursor, "TOGGLE") == 0) inverted = !Stepper_GetDirectionInverted(axis);
+    else { send_error("DIR value NORMAL, REVERSE, or TOGGLE"); return; }
+
+    Stepper_SetDirectionInverted(axis, inverted);
+    send_ok();
+}
+
+static void parse_limit_command(const char *line)
+{
+    const char *cursor = line + 5;
+    while (*cursor == ' ' || *cursor == '\t') ++cursor;
+    if (*cursor == '\0' || strcmp(cursor, "?") == 0) {
+        send_value("LIMIT=", Limit_GetEnabled() ? 1 : 0, " ;0=off 1=on\r\n");
+        send_ok();
+        return;
+    }
+    if (Stepper_IsBusy()) { send_error("busy"); return; }
+
+    bool enabled;
+    if (strcmp(cursor, "ON") == 0 || strcmp(cursor, "1") == 0) enabled = true;
+    else if (strcmp(cursor, "OFF") == 0 || strcmp(cursor, "0") == 0) enabled = false;
+    else { send_error("LIMIT value ON or OFF"); return; }
+
+    Limit_SetEnabled(enabled);
+    if (!enabled) Stepper_ClearLimitStopped();
+    send_ok();
 }
 
 static bool execute_line(CommandSource source, char *line, bool script)
@@ -379,6 +523,22 @@ static bool execute_line(CommandSource source, char *line, bool script)
     if (*line == '\0') { if (!script) send_ok(); return true; }
 
     if (strcmp(line, "HELP") == 0) { GCode_Send(s_command_help); return true; }
+    if (strcmp(line, "ESTOP") == 0) { trigger_estop_command(); return true; }
+    if (strcmp(line, "ESTOP?") == 0) {
+        send_value("ESTOP=", s_estop_latched ? 1 : 0, " ;latched\r\n");
+        send_value("BUTTON=", estop_button_active() ? 1 : 0, " ;physical input\r\n");
+        send_ok();
+        return true;
+    }
+    if (strcmp(line, "ESTOP RESET") == 0) { unlock_alarms(); return true; }
+    if (strcmp(line, "CLEAR ALARM") == 0 || strcmp(line, "ALARM CLEAR") == 0) {
+        unlock_alarms();
+        return true;
+    }
+    if (strcmp(line, "DIR?") == 0) { print_direction_settings(); return true; }
+    if (strncmp(line, "DIR ", 4U) == 0) { parse_direction_command(line); return true; }
+    if (strcmp(line, "LIMIT") == 0 || strcmp(line, "LIMIT?") == 0 ||
+        strncmp(line, "LIMIT ", 6U) == 0) { parse_limit_command(line); return true; }
     if (strcmp(line, "?") == 0) { send_status(); return true; }
     if (strcmp(line, "!") == 0) {
         Stepper_StopAll();
@@ -409,7 +569,7 @@ static bool execute_line(CommandSource source, char *line, bool script)
         if (m == 0 || m == 1) { gc.paused = true; send_ok(); return true; }
         if (m == 2 || m == 18 || m == 30 || m == 84) { Stepper_StopAll(); send_ok(); return true; }
         if (m == 17) { send_ok(); return true; }
-        if (m == 112) { Stepper_StopAll(); CycleEngine_Stop(); gc.alarm = true; GCode_Send("ALARM\r\n"); return true; }
+        if (m == 112) { trigger_estop_command(); return true; }
         send_error("M?"); return false;
     }
 
@@ -481,7 +641,8 @@ static bool command_is_realtime(const char *line)
         ++length;
     }
     upper[length] = '\0';
-    return strcmp(upper, "STOP") == 0 || strcmp(upper, "M112") == 0;
+    return strcmp(upper, "STOP") == 0 || strcmp(upper, "M112") == 0 ||
+           strcmp(upper, "ESTOP") == 0;
 }
 
 static bool command_processing_busy(void)
@@ -518,6 +679,11 @@ void GCode_Init(void)
         gc.steps_per_rev[axis] = DEFAULT_STEPS_PER_REV;
         gc.um_per_rev[axis] = DEFAULT_UM_PER_REV;
     }
+    if (estop_button_active()) {
+        Stepper_StopAll();
+        s_estop_latched = true;
+        s_estop_report_pending = true;
+    }
 }
 
 void GCode_PutCharFrom(CommandSource source, char character)
@@ -546,6 +712,7 @@ bool GCode_ExecuteScriptLine(CommandSource source, const char *line)
 
 void GCode_Poll(void)
 {
+    if (take_estop_report_pending()) enter_estop_alarm();
     if (gc.dwelling && (int32_t)(HAL_GetTick() - gc.dwell_end_ms) >= 0) gc.dwelling = false;
     if (Stepper_LimitStopped() && !gc.alarm) {
         gc.alarm = true;

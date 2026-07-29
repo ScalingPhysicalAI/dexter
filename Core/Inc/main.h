@@ -62,6 +62,16 @@ void MX_LPUART1_UART_Init(void);
 /* Private defines -----------------------------------------------------------*/
 
 /* USER CODE BEGIN Private defines */
+/* Set to 0 to compile out physical E-stop button handling. */
+#ifndef ESTOP_BUTTON_ENABLE
+#define ESTOP_BUTTON_ENABLE 1U
+#endif
+
+/* 1: button shorts PC2 to GND when pressed; 0: active-high input. */
+#ifndef ESTOP_BUTTON_ACTIVE_LOW
+#define ESTOP_BUTTON_ACTIVE_LOW 1U
+#endif
+
 #define X_STEP_Pin GPIO_PIN_0
 #define X_STEP_GPIO_Port GPIOA
 #define Y_STEP_Pin GPIO_PIN_1
@@ -78,6 +88,8 @@ void MX_LPUART1_UART_Init(void);
 #define Z_LIMIT_MIN_GPIO_Port GPIOC
 #define Z_LIMIT_MAX_Pin GPIO_PIN_1
 #define Z_LIMIT_MAX_GPIO_Port GPIOC
+#define ESTOP_Pin GPIO_PIN_2
+#define ESTOP_GPIO_Port GPIOC
 
 /* USER CODE END Private defines */
 

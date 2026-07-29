@@ -2,6 +2,17 @@
 #include "limit_switches.h"
 
 static volatile bool s_active_high = true;
+static volatile bool s_enabled = false;
+
+void Limit_SetEnabled(bool enabled)
+{
+    s_enabled = enabled;
+}
+
+bool Limit_GetEnabled(void)
+{
+    return s_enabled;
+}
 
 void Limit_SetActiveHigh(bool active_high)
 {
@@ -31,5 +42,6 @@ bool Limit_ZMaxActive(void)
 
 bool Limit_ZMotionAllowed(bool positive_direction)
 {
+    if (!s_enabled) return true;
     return positive_direction ? !Limit_ZMaxActive() : !Limit_ZMinActive();
 }

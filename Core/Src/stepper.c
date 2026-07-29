@@ -191,6 +191,13 @@ void Stepper_StopAll(void)
     __enable_irq();
 }
 
+void Stepper_EmergencyStopFromISR(void)
+{
+    /* EXTI priority is higher than TIM2, so the motion state is stable here. */
+    finish_move();
+    all_steps_low();
+}
+
 int32_t Stepper_GetPos(uint8_t axis) { return axis < NUM_AXES ? g_axis[axis].pos : 0; }
 
 void Stepper_SetPosition(uint8_t axis, int32_t position)

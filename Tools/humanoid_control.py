@@ -6,7 +6,7 @@ from collections import deque
 
 import serial
 import serial.tools.list_ports
-from PyQt5.QtCore import QTimer
+from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtWidgets import (
     QApplication, QComboBox, QDoubleSpinBox, QFormLayout, QGridLayout,
     QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QMainWindow,
@@ -316,7 +316,7 @@ class DexterWindow(QMainWindow):
             self.macro_list.clear()
         elif line.endswith("lines)") and "(" in line:
             name = line.split("(", 1)[0].strip()
-            if name and not self.macro_list.findItems(name, 0):
+            if name and not self.macro_list.findItems(name, Qt.MatchExactly):
                 self.macro_list.addItem(name)
         elif line.startswith("<"):
             self.state_label.setText(line)

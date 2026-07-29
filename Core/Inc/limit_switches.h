@@ -4,6 +4,8 @@
 #include <stdbool.h>
 
 /* Default: active HIGH (normally-closed switch, HIGH=open/tripped). */
+void Limit_SetEnabled(bool enabled);
+bool Limit_GetEnabled(void);
 void Limit_SetActiveHigh(bool active_high);
 bool Limit_GetActiveHigh(void);
 bool Limit_ZMinActive(void);

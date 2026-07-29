@@ -35,6 +35,7 @@ bool Stepper_GetDirectionInverted(uint8_t axis);
 bool Stepper_IsBusy(void);
 bool Stepper_IsAxisBusy(uint8_t axis);
 void Stepper_StopAll(void);
+void Stepper_EmergencyStopFromISR(void);
 int32_t Stepper_GetPos(uint8_t axis);
 void Stepper_SetPosition(uint8_t axis, int32_t position);
 bool Stepper_LimitStopped(void);

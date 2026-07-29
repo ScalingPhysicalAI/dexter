@@ -6,6 +6,7 @@
 
 void GCode_Init(void);
 void GCode_PrintBootHelp(void);
+void GCode_EStopFromISR(void);
 void GCode_PutCharFrom(CommandSource source, char character);
 void GCode_Poll(void);
 bool GCode_ExecuteScriptLine(CommandSource source, const char *line);
