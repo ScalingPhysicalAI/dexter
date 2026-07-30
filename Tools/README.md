@@ -21,13 +21,13 @@ send `HELP` to print it again.
 
 `mp2_can_command.py` communicates with the L5 board through Linux SocketCAN and
 uses only the Python standard library. The L5 firmware expects classic CAN at
-1 Mbit/s, command ID `0x600`, and response ID `0x601`.
+500 kbit/s, command ID `0x600`, and response ID `0x601`.
 
 Bring up the STM32MP2 CAN interface (change `can0` if required):
 
 ```sh
 sudo ip link set can0 down
-sudo ip link set can0 type can bitrate 1000000 restart-ms 100
+sudo ip link set can0 type can bitrate 500000 restart-ms 100
 sudo ip link set can0 up
 ip -details link show can0
 ```

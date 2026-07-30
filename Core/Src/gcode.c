@@ -1,4 +1,5 @@
 #include "gcode.h"
+#include "can_interface.h"
 #include "cycle_engine.h"
 #include "limit_switches.h"
 #include "main.h"
@@ -63,7 +64,7 @@ static const char s_command_help[] =
 #endif
     "Direction: DIR X|Y|Z NORMAL|REVERSE (or $20/$21/$22=0|1)\r\n"
     "Limits: LIMIT ON|OFF, $23=polarity, $24=enable (default OFF)\r\n"
-    "CAN IDs: CANID <RX> <TX>, CANID?, CANID DEFAULT\r\n"
+    "CAN 500k: CAN STATUS, CAN TEST; IDs: CANID <RX> <TX>, CANID?\r\n"
     "Cycles: LIST, RUN <name>, MACRO <name>, STOP\r\n"
     "Type HELP to print this guide again.\r\n"
     "ready\r\n";
@@ -481,6 +482,53 @@ static void parse_can_id_command(const char *line)
     (void)CommandIO_SetCanIds(receive_id, transmit_id);
 }
 
+static void send_can_status(void)
+{
+    CAN_InterfaceStatus status;
+    char buffer[160];
+    char *out = buffer;
+
+    if (!CAN_GetStatus(&status)) {
+        send_error("CAN status unavailable");
+        return;
+    }
+
+    out = append_text(out, "CAN CLOCK=");
+    out = append_u32(out, status.kernel_clock_hz);
+    out = append_text(out, " BITRATE=");
+    out = append_u32(out, status.nominal_bitrate);
+    out = append_text(out, " TEC=");
+    out = append_u32(out, status.tx_error_count);
+    out = append_text(out, " REC=");
+    out = append_u32(out, status.rx_error_count);
+    out = append_text(out, " LEC=");
+    out = append_u32(out, status.last_error_code);
+    out = append_text(out, " PASSIVE=");
+    out = append_u32(out, status.error_passive ? 1U : 0U);
+    out = append_text(out, " WARNING=");
+    out = append_u32(out, status.warning ? 1U : 0U);
+    out = append_text(out, " BUSOFF=");
+    out = append_u32(out, status.bus_off ? 1U : 0U);
+    out = append_text(out, "\r\n");
+    *out = '\0';
+    GCode_Send(buffer);
+    send_ok();
+}
+
+static void run_can_test(void)
+{
+    if (Stepper_IsBusy() || CycleEngine_IsBusy()) {
+        send_error("stop motion before CAN TEST");
+        return;
+    }
+    if (CAN_RunInternalLoopbackTest()) {
+        GCode_Send("CAN LOOPBACK=PASS; NORMAL MODE RESTORED\r\n");
+        send_ok();
+    } else {
+        send_error("CAN loopback failed or normal-mode restore failed");
+    }
+}
+
 static void parse_setting(const char *line)
 {
     if (line[1] == '\0') { print_settings(); return; }
@@ -632,6 +680,8 @@ static bool execute_line(CommandSource source, char *line, bool script)
     if (strcmp(line, "HELP") == 0) { GCode_Send(s_command_help); return true; }
     if (strcmp(line, "CANID") == 0 || strcmp(line, "CANID?") == 0 ||
         strncmp(line, "CANID ", 6U) == 0) { parse_can_id_command(line); return true; }
+    if (strcmp(line, "CAN STATUS") == 0) { send_can_status(); return true; }
+    if (strcmp(line, "CAN TEST") == 0) { run_can_test(); return true; }
     if (strcmp(line, "ESTOP") == 0) { trigger_estop_command(); return true; }
     if (strcmp(line, "ESTOP?") == 0) {
         send_value("ESTOP=", s_estop_latched ? 1 : 0, " ;latched\r\n");

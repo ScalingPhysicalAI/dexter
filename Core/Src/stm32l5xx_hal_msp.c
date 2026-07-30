@@ -221,6 +221,16 @@ void HAL_FDCAN_MspInit(FDCAN_HandleTypeDef *hfdcan)
 {
   if (hfdcan->Instance == FDCAN1) {
     GPIO_InitTypeDef GPIO_InitStruct = {0};
+    RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
+
+    /* FDCAN defaults to HSE after reset, but this project runs from MSI+PLL.
+       Select and enable the 110 MHz PLLQ output before enabling FDCAN1. */
+    PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_FDCAN;
+    PeriphClkInit.FdcanClockSelection = RCC_FDCANCLKSOURCE_PLL;
+    if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK) {
+      Error_Handler();
+    }
+
     __HAL_RCC_FDCAN1_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
     GPIO_InitStruct.Pin = GPIO_PIN_8 | GPIO_PIN_9;
@@ -231,6 +241,15 @@ void HAL_FDCAN_MspInit(FDCAN_HandleTypeDef *hfdcan)
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
     HAL_NVIC_SetPriority(FDCAN1_IT0_IRQn, 2, 0);
     HAL_NVIC_EnableIRQ(FDCAN1_IT0_IRQn);
+  }
+}
+
+void HAL_FDCAN_MspDeInit(FDCAN_HandleTypeDef *hfdcan)
+{
+  if (hfdcan->Instance == FDCAN1) {
+    __HAL_RCC_FDCAN1_CLK_DISABLE();
+    HAL_GPIO_DeInit(GPIOB, GPIO_PIN_8 | GPIO_PIN_9);
+    HAL_NVIC_DisableIRQ(FDCAN1_IT0_IRQn);
   }
 }
 

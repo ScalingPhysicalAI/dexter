@@ -18,10 +18,11 @@ STM32CubeL5 V1.6.0.
 The CAN pins require an external CAN transceiver. Install 120 ohm termination
 only at the two physical ends of the CAN bus.
 
-`can_interface.c` accepts standard 11-bit CAN frames and provides an eight-frame
-RX FIFO and TX FIFO. `limit_switches.c` treats HIGH as tripped/open wire.
+`can_interface.c` accepts standard 11-bit CAN frames. STM32L552 provides three
+hardware elements in RX FIFO 0 and the TX FIFO/queue. `limit_switches.c` treats
+HIGH as tripped/open wire.
 
-CAN is also a complete command interface at 1 Mbit/s. It uses standard 11-bit
+CAN is also a complete command interface at 500 kbit/s. It uses standard 11-bit
 ID `0x600` for received command bytes and ID `0x601` for response bytes by
 default. Query the active IDs with `CANID?`, change them at runtime with
 `CANID <RX> <TX>`, and restore defaults with `CANID DEFAULT`. A CAN-originated
@@ -34,6 +35,11 @@ same CR/LF text used by USB and LPUART1. For example, transmit the bytes of
 the ID `0x601` response. Only one CAN command sender should use the stream at a
 time. Override `CAN_COMMAND_RX_ID` and `CAN_COMMAND_TX_ID` at compile time to
 change the boot defaults.
+
+Use `CAN STATUS` to report the live FDCAN kernel clock, calculated bitrate,
+error counters, last error code, and bus-off state. Use `CAN TEST` from USB,
+LPUART1, or CAN to run an internal-controller loopback test; the firmware then
+restores normal bus mode automatically.
 
 Limit input polarity is configurable over either command port. Use `$23=0` for
 active-low, `$23=1` for active-high, or `$23` to read the current polarity. The

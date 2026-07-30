@@ -1,6 +1,6 @@
 # Connection overview
 
-![Dexter STM32L552ZET6 connection overview](connection_overview.png)
+![Dexter STM32L552ZET6 connection overview](connection_overview_500k.png)
 
 ## Interface wiring
 
@@ -15,7 +15,7 @@
 | USB CDC | PA11 DM, PA12 DP | USB host | Command interface |
 | LPUART1 | PG7 TX, PG8 RX | Adapter RX, adapter TX | Cross TX/RX; 115200 8-N-1 |
 | FDCAN1 | PB9 TX, PB8 RX | L5-side CAN transceiver | Never connect MCU pins directly to CAN-H/CAN-L |
-| CAN bus | Transceiver CAN-H/CAN-L | MP2-side CAN transceiver | 1 Mbit/s, common ground, 120 ohm at both ends |
+| CAN bus | Transceiver CAN-H/CAN-L | MP2-side CAN transceiver | 500 kbit/s, common ground, 120 ohm at both ends |
 
 The CAN command defaults are standard ID `0x600` for L5 receive and `0x601`
 for L5 responses. Query with `CANID?` and change them at runtime with
