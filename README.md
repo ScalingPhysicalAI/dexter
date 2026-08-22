@@ -10,6 +10,7 @@ STM32CubeL5 V1.6.0.
 - Z STEP/DIR: PB10/PB11
 - Z minimum/maximum limits: PC0/PC1, normally closed, pull-up enabled
 - Emergency-stop button: PC2, active-low with pull-up, EXTI priority 0
+- Linear actuator H-bridge: PC6 TIM3_CH1 PWM/ENA, PC7 IN1, PC8 IN2
 - FDCAN1 RX/TX: PB8/PB9, classic CAN
 - USB CDC DM/DP: PA11/PA12
 - LPUART1 debug TX/RX: PG7/PG8, 115200 8-N-1
@@ -65,9 +66,17 @@ G0 X1000 Y1000 Z1000
 ```
 
 Core commands include `G0`, `G1`, `G4`, `G28`, `G90`, `G91`, `G92`, `M17`,
-`M18`, `M84`, `M112`, `ESTOP`, `ESTOP?`, `ESTOP RESET`, `CLEAR ALARM`, `?`,
+`M18`, `M84`, `M112`, `M3`, `M4`, `M5`, `ESTOP`, `ESTOP?`, `ESTOP RESET`, `CLEAR ALARM`, `?`,
 `!`, `~`, `$H`, `$X`, and `HELP`. Units are raw
 steps by default; `$14=1` enables calibrated millimetres.
+
+The linear DC actuator uses an external H-bridge. `M3 S<ms> P<pct>` extends,
+`M4 S<ms> P<pct>` retracts, and `M5` stops immediately. `S` is optional and
+defaults to `0` (run continuously); `P` is optional and reuses the last speed,
+which is 100% after reset. TIM3 generates 1 kHz PWM on PC6. PC7/PC8 are the
+direction inputs. Never connect a motor directly to the MCU pins. `M5`, `STOP`,
+hold, program end, and every E-stop path remove PWM and drive both direction
+pins low. The commands are available over USB CDC, LPUART1, CAN, and scripts.
 
 `M112` or `ESTOP` from USB CDC, LPUART1, or a script immediately stops every
 axis, stops the cycle engine, clears queued motion, and latches the controller in

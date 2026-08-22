@@ -2,7 +2,7 @@
 
 ## Product objective
 
-The controller shall operate three stepper axes on STM32L552ZET6, accept the
+The controller shall operate three stepper axes and one H-bridge linear actuator on STM32L552ZET6, accept the
 same command language from USB CDC, LPUART1, and CAN, execute coordinated XYZ
 motion and cycle scripts, and place safety inputs ahead of motion continuity.
 
@@ -18,6 +18,7 @@ motion and cycle scripts, and place safety inputs ahead of motion continuity.
 | HW-06 | FDCAN1 shall use PB9/PB8 through an external CAN transceiver. | CAN analyzer test |
 | HW-07 | CAN-H/CAN-L shall be terminated with 120 ohm only at the two bus ends. | Powered-off resistance and wiring inspection |
 | HW-08 | All logic interfaces shall share a valid common ground and remain within 3.3 V GPIO ratings. | Electrical inspection |
+| HW-09 | Linear actuator PWM/ENA, IN1, and IN2 shall use PC6/TIM3_CH1, PC7, and PC8 through an external H-bridge. | IOC inspection and unloaded actuator test |
 
 ## Functional requirements
 
@@ -35,6 +36,9 @@ motion and cycle scripts, and place safety inputs ahead of motion continuity.
 | FR-10 | Alarm clear shall fail while the E-stop input remains active. | `CLEAR ALARM` reports an error while PC2 is held |
 | FR-11 | Cycle macros and command files shall run without blocking communication polling. | Macro progress and emergency interruption test |
 | FR-12 | Firmware shall print a concise startup helper on USB and LPUART1 and respond to `HELP` on every command interface. | Boot and `HELP` test |
+| FR-13 | `M3 S<ms> P<0-100>` shall extend and `M4` shall retract the linear actuator, with `S=0` meaning continuous operation. | Direction, duty-cycle, and timed-stop tests |
+| FR-14 | `M5` shall stop the linear actuator immediately from USB, LPUART1, CAN, or a script. | Execute during actuator operation on every interface |
+| FR-15 | Hold, STOP, program end, remote E-stop, and physical E-stop shall remove linear-actuator PWM and set both H-bridge direction outputs low. | Oscilloscope and fault-interruption test |
 
 ## Software and build requirements
 
@@ -53,6 +57,8 @@ motion and cycle scripts, and place safety inputs ahead of motion continuity.
   motor energy. Production hardware should include an independent safety-rated
   power/enable chain.
 - A CAN transceiver is mandatory at both MCU endpoints.
+- An external current-rated H-bridge with flyback protection is mandatory for
+  the linear actuator; PC6/PC7/PC8 are logic signals only.
 - Limit and E-stop behavior must be validated with motors mechanically unloaded
   before full-force operation.
 - Commands received from different interfaces share one motion queue; system

@@ -25,6 +25,8 @@
 | F-19 | Startup command helper | Diagnostics | Done | USB/LPUART boot output and `HELP` command |
 | F-20 | Connection and engineering documentation | Documentation | Done | Diagram, requirements, phases, feature matrix |
 | F-21 | CAN clock, 500 kbit/s timing, status, and internal loopback diagnostic | Diagnostics | Done | `CAN STATUS` and `CAN TEST`; normal mode restored after test |
+| F-22 | Linear DC actuator with timed direction and PWM speed control | Motion | Done | `M3/M4/M5`; PC6 PWM, PC7/PC8 direction, all command sources |
+| F-23 | Linear actuator safety-stop integration | Safety | Done | Hold, STOP, program end, M112, and physical E-stop remove drive |
 
 ## Suggested features
 

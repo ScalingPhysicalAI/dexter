@@ -1,5 +1,6 @@
 #include "cycle_engine.h"
 #include "gcode.h"
+#include "linear_actuator.h"
 #include "stepper.h"
 #include <stddef.h>
 
@@ -133,8 +134,9 @@ bool CycleEngine_Run(const char *name, CommandSource source)
 
 void CycleEngine_Stop(void)
 {
-    if (s_state == CE_IDLE) return;
     Stepper_StopAll();
+    LinearActuator_Stop();
+    if (s_state == CE_IDLE) return;
     s_state = CE_IDLE;
     send_to(s_source, "[CE:stopped]\r\n");
 }

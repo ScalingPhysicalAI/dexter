@@ -2,6 +2,7 @@
 #include "can_interface.h"
 #include "cycle_engine.h"
 #include "limit_switches.h"
+#include "linear_actuator.h"
 #include "main.h"
 #include "stepper.h"
 #include <stdint.h>
@@ -56,6 +57,7 @@ static const char s_command_help[] =
     "Command ports: USB CDC, LPUART1 IRQ, or CAN (CANID? to query)\r\n"
     "Motion: G0/G1 X.. Y.. Z.. [F..] (XYZ synchronized)\r\n"
     "Modes: G90 absolute, G91 relative, G92 set position, G4 P.. dwell\r\n"
+    "Linear: M3 S<ms> P<0-100> extend, M4 retract, M5 stop\r\n"
     "Control: ? status, ! hold, ~ resume, ESTOP/M112, CLEAR ALARM\r\n"
 #if ESTOP_BUTTON_ENABLE
     "E-stop button: PC2 active-low; ESTOP RESET only after release\r\n"
@@ -165,6 +167,7 @@ static bool take_estop_report_pending(void)
 
 static void enter_estop_alarm(void)
 {
+    LinearActuator_Stop();
     CycleEngine_Stop();
     gc.dwelling = false;
     gc.queue_head = gc.queue_tail = 0U;
@@ -177,6 +180,7 @@ static void enter_estop_alarm(void)
 static void trigger_estop_command(void)
 {
     Stepper_StopAll();
+    LinearActuator_Stop();
     s_estop_latched = true;
     s_estop_report_pending = true;
     (void)take_estop_report_pending();
@@ -188,6 +192,7 @@ void GCode_EStopFromISR(void)
 #if ESTOP_BUTTON_ENABLE
     if (!estop_button_active()) return;
     Stepper_EmergencyStopFromISR();
+    LinearActuator_EmergencyStopFromISR();
     s_estop_latched = true;
     s_estop_report_pending = true;
 #endif
@@ -312,9 +317,10 @@ static char *append_position(char *out, int32_t steps, uint8_t axis)
 
 static void send_status(void)
 {
-    char buffer[192];
+    char buffer[224];
     char *out = buffer;
-    const char *state = gc.alarm ? "Alarm" : gc.paused ? "Hold" : Stepper_IsBusy() ? "Run" : "Idle";
+    const char *state = gc.alarm ? "Alarm" : gc.paused ? "Hold" :
+                        (Stepper_IsBusy() || LinearActuator_IsBusy()) ? "Run" : "Idle";
     out = append_text(out, "<");
     out = append_text(out, state);
     out = append_text(out, "|MPos:");
@@ -338,6 +344,12 @@ static void send_status(void)
     if (Stepper_LimitStopped()) out = append_text(out, "|Limit:Z");
     out = append_text(out, "|EStop:");
     *out++ = s_estop_latched ? '1' : '0';
+    out = append_text(out, "|Act:");
+    LinearActuatorDirection actuator_direction = LinearActuator_GetDirection();
+    if (actuator_direction == LINEAR_ACTUATOR_EXTEND) out = append_text(out, "EXT,");
+    else if (actuator_direction == LINEAR_ACTUATOR_RETRACT) out = append_text(out, "RET,");
+    else out = append_text(out, "STOP,");
+    out = append_u32(out, LinearActuator_GetSpeed());
     const char *macro = CycleEngine_GetCurrentName();
     if (*macro != '\0') {
         out = append_text(out, "|CE:");
@@ -701,6 +713,7 @@ static bool execute_line(CommandSource source, char *line, bool script)
     if (strcmp(line, "?") == 0) { send_status(); return true; }
     if (strcmp(line, "!") == 0) {
         Stepper_StopAll();
+        LinearActuator_Stop();
         gc.paused = true;
         CycleEngine_Stop();
         GCode_Send("HOLD\r\n");
@@ -709,7 +722,13 @@ static bool execute_line(CommandSource source, char *line, bool script)
     if (strcmp(line, "~") == 0) { gc.paused = false; send_ok(); return true; }
     if (strncmp(line, "RUN ", 4U) == 0) return CycleEngine_Run(line + 4, source);
     if (strcmp(line, "LIST") == 0) { CycleEngine_List(source); send_ok(); return true; }
-    if (strcmp(line, "STOP") == 0) { CycleEngine_Stop(); send_ok(); return true; }
+    if (strcmp(line, "STOP") == 0) {
+        Stepper_StopAll();
+        LinearActuator_Stop();
+        CycleEngine_Stop();
+        send_ok();
+        return true;
+    }
     if (strncmp(line, "MACRO ", 6U) == 0) { CycleEngine_PrintMacro(line + 6, source); send_ok(); return true; }
     if (*line == '$') { parse_setting(line); return true; }
 
@@ -726,7 +745,44 @@ static bool execute_line(CommandSource source, char *line, bool script)
 
     if (has_m) {
         if (m == 0 || m == 1) { gc.paused = true; send_ok(); return true; }
-        if (m == 2 || m == 18 || m == 30 || m == 84) { Stepper_StopAll(); send_ok(); return true; }
+        if (m == 2 || m == 18 || m == 30 || m == 84) {
+            Stepper_StopAll();
+            LinearActuator_Stop();
+            send_ok();
+            return true;
+        }
+        if (m == 3 || m == 4) {
+            if (s_estop_latched || gc.alarm || gc.paused) {
+                send_error("hold/alarm");
+                return false;
+            }
+            bool has_s;
+            int32_t s10 = parse_word_tenths(line, 'S', &has_s);
+            if ((has_s && s10 < 0) || (has_p && (p10 < 0 || p10 > 1000))) {
+                send_error("M3/M4 needs S>=0 and P=0..100");
+                return false;
+            }
+            uint32_t duration_ms = has_s ? (uint32_t)tenths_to_integer(s10) : 0U;
+            uint8_t speed_pct = has_p ? (uint8_t)tenths_to_integer(p10) :
+                                        LinearActuator_GetSpeed();
+            LinearActuatorDirection direction = m == 3 ? LINEAR_ACTUATOR_EXTEND :
+                                                         LINEAR_ACTUATOR_RETRACT;
+            LinearActuator_Run(direction, duration_ms, speed_pct);
+            if (speed_pct == 0U) GCode_Send("[MSG:Linear actuator stopped P0]\r\n");
+            else if (direction == LINEAR_ACTUATOR_EXTEND) {
+                GCode_Send("[MSG:Linear actuator extending]\r\n");
+            } else {
+                GCode_Send("[MSG:Linear actuator retracting]\r\n");
+            }
+            send_ok();
+            return true;
+        }
+        if (m == 5) {
+            LinearActuator_Stop();
+            GCode_Send("[MSG:Linear actuator stopped]\r\n");
+            send_ok();
+            return true;
+        }
         if (m == 17) { send_ok(); return true; }
         if (m == 112) { trigger_estop_command(); return true; }
         send_error("M?"); return false;
@@ -800,7 +856,8 @@ static bool command_is_realtime(const char *line)
         ++length;
     }
     upper[length] = '\0';
-    return strcmp(upper, "STOP") == 0 || strcmp(upper, "M112") == 0 ||
+    return strcmp(upper, "STOP") == 0 || strcmp(upper, "M5") == 0 ||
+           strcmp(upper, "M112") == 0 ||
            strcmp(upper, "ESTOP") == 0;
 }
 
@@ -872,6 +929,7 @@ bool GCode_ExecuteScriptLine(CommandSource source, const char *line)
 
 void GCode_Poll(void)
 {
+    LinearActuator_Poll();
     if (take_estop_report_pending()) enter_estop_alarm();
     if (gc.dwelling && (int32_t)(HAL_GetTick() - gc.dwell_end_ms) >= 0) gc.dwelling = false;
     if (Stepper_LimitStopped() && !gc.alarm) {

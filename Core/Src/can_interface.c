@@ -51,7 +51,20 @@ bool CAN_Receive(uint16_t *standard_id, uint8_t *data, uint8_t *length)
         HAL_FDCAN_GetRxFifoFillLevel(s_can, FDCAN_RX_FIFO0) == 0U) return false;
     if (HAL_FDCAN_GetRxMessage(s_can, FDCAN_RX_FIFO0, &h, data) != HAL_OK) return false;
     *standard_id = (uint16_t)h.Identifier;
-    *length = (uint8_t)(h.DataLength >> 16);
+    // *length = (uint8_t)(h.DataLength >> 16);
+    switch (h.DataLength) {
+            case FDCAN_DLC_BYTES_0: *length = 0; break;
+            case FDCAN_DLC_BYTES_1: *length = 1; break;
+            case FDCAN_DLC_BYTES_2: *length = 2; break;
+            case FDCAN_DLC_BYTES_3: *length = 3; break;
+            case FDCAN_DLC_BYTES_4: *length = 4; break;
+            case FDCAN_DLC_BYTES_5: *length = 5; break;
+            case FDCAN_DLC_BYTES_6: *length = 6; break;
+            case FDCAN_DLC_BYTES_7: *length = 7; break;
+            case FDCAN_DLC_BYTES_8: *length = 8; break;
+            default: *length = 0; break;
+        }
+
     return true;
 }
 

@@ -133,12 +133,26 @@ static void can_tx_poll(void)
     uint8_t data[CAN_FRAME_MAX_BYTES];
     uint8_t length = 0U;
     uint16_t cursor = s_can_tx_tail;
+    bool flush_now = false;
+
     while (cursor != s_can_tx_head && length < CAN_FRAME_MAX_BYTES) {
-        data[length++] = s_can_tx_ring[cursor];
+        char current_char = (char)s_can_tx_ring[cursor];
+        data[length++] = (uint8_t)current_char;
+
+        if (current_char == '\n' || current_char == '\r') {
+            flush_now = true;
+        }
+
         cursor = (uint16_t)((cursor + 1U) & (CAN_TX_RING_SIZE - 1U));
     }
-    if (CAN_Send(s_can_transmit_id, data, length)) s_can_tx_tail = cursor;
+
+    if (length == CAN_FRAME_MAX_BYTES || flush_now || cursor == s_can_tx_head) {
+        if (CAN_Send(s_can_transmit_id, data, length)) {
+            s_can_tx_tail = cursor;
+        }
+    }
 }
+
 
 void CommandIO_Poll(void)
 {
