@@ -18,7 +18,7 @@ motion and cycle scripts, and place safety inputs ahead of motion continuity.
 | HW-06 | FDCAN1 shall use PB9/PB8 through an external CAN transceiver. | CAN analyzer test |
 | HW-07 | CAN-H/CAN-L shall be terminated with 120 ohm only at the two bus ends. | Powered-off resistance and wiring inspection |
 | HW-08 | All logic interfaces shall share a valid common ground and remain within 3.3 V GPIO ratings. | Electrical inspection |
-| HW-09 | Linear actuator PWM/ENA, IN1, and IN2 shall use PC6/TIM3_CH1, PC7, and PC8 through an external H-bridge. | IOC inspection and unloaded actuator test |
+| HW-09 | Linear actuator ENA, IN1, and IN2 shall use PC6, PC7, and PC8 GPIO outputs through an external H-bridge. | IOC inspection and unloaded actuator test |
 
 ## Functional requirements
 
@@ -36,9 +36,9 @@ motion and cycle scripts, and place safety inputs ahead of motion continuity.
 | FR-10 | Alarm clear shall fail while the E-stop input remains active. | `CLEAR ALARM` reports an error while PC2 is held |
 | FR-11 | Cycle macros and command files shall run without blocking communication polling. | Macro progress and emergency interruption test |
 | FR-12 | Firmware shall print a concise startup helper on USB and LPUART1 and respond to `HELP` on every command interface. | Boot and `HELP` test |
-| FR-13 | `M3 S<ms> P<0-100>` shall extend and `M4` shall retract the linear actuator, with `S=0` meaning continuous operation. | Direction, duty-cycle, and timed-stop tests |
+| FR-13 | `M3 S<ms>` shall extend and `M4 S<ms>` shall retract the linear actuator at full DC output, with `S=0` meaning continuous operation. | Direction, enable-level, and timed-stop tests |
 | FR-14 | `M5` shall stop the linear actuator immediately from USB, LPUART1, CAN, or a script. | Execute during actuator operation on every interface |
-| FR-15 | Hold, STOP, program end, remote E-stop, and physical E-stop shall remove linear-actuator PWM and set both H-bridge direction outputs low. | Oscilloscope and fault-interruption test |
+| FR-15 | Hold, STOP, program end, remote E-stop, and physical E-stop shall set the linear-actuator enable and both H-bridge direction outputs low. | Oscilloscope and fault-interruption test |
 
 ## Software and build requirements
 

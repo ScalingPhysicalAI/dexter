@@ -52,7 +52,6 @@ extern "C" {
 /* Exported functions prototypes ---------------------------------------------*/
 void Error_Handler(void);
 void MX_TIM2_Init(void);
-void MX_TIM3_Init(void);
 void MX_FDCAN1_Init(void);
 void MX_LPUART1_UART_Init(void);
 
@@ -91,8 +90,8 @@ void MX_LPUART1_UART_Init(void);
 #define Z_LIMIT_MAX_GPIO_Port GPIOC
 #define ESTOP_Pin GPIO_PIN_2
 #define ESTOP_GPIO_Port GPIOC
-#define LINEAR_ACT_PWM_Pin GPIO_PIN_6
-#define LINEAR_ACT_PWM_GPIO_Port GPIOC
+#define LINEAR_ACT_EN_Pin GPIO_PIN_6
+#define LINEAR_ACT_EN_GPIO_Port GPIOC
 #define LINEAR_ACT_IN1_Pin GPIO_PIN_7
 #define LINEAR_ACT_IN1_GPIO_Port GPIOC
 #define LINEAR_ACT_IN2_Pin GPIO_PIN_8

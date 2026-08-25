@@ -10,7 +10,7 @@
 | 6 | FDCAN1 and STM32MP2 SocketCAN command transport | Done | Multi-frame ASCII fragmentation test |
 | 7 | Z limits, direction control, E-stop, alarm latch/clear | Done | Compile and safety-path inspection |
 | 8 | Runtime CAN-ID change, tools, connection image, project documentation | Done | `CANID` command and documentation package |
-| 9 | Linear actuator H-bridge, PWM speed, M3/M4/M5, and E-stop integration | Done | Warning-free CubeIDE build and pin/command review |
+| 9 | Linear actuator H-bridge, digital enable, M3/M4/M5, and E-stop integration | Done | Warning-free CubeIDE build and pin/command review |
 | 10 | Hardware-in-loop regression rig and automated interface tests | Suggested | Repeatable USB/UART/CAN test report |
 | 11 | Persistent configuration with versioning and CRC | Suggested | Power-cycle retention and corruption test |
 | 12 | Production safety hardware, watchdog, driver-fault feedback | Suggested | Safety review and fault-injection report |
@@ -28,6 +28,6 @@
 7. Verify CAN defaults, long multi-frame commands, runtime ID switching, and
    reset-to-default behavior from the STM32MP2 client.
 8. Run cycle and command-file tests, including E-stop interruption.
-9. With the actuator mechanically unloaded, verify M3/M4 direction, P0/P50/P100
-   duty cycle, timed `S` stop, continuous run, M5, and E-stop shutdown.
+9. With the actuator mechanically unloaded, verify M3/M4 direction, PC6 HIGH
+   while running, timed `S` stop, continuous run, M5, and E-stop shutdown.
 10. Repeat with expected bus load, disconnected sensors, and power cycling.

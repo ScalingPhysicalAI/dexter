@@ -50,7 +50,6 @@
 /* Private variables ---------------------------------------------------------*/
 
 TIM_HandleTypeDef htim2;
-TIM_HandleTypeDef htim3;
 FDCAN_HandleTypeDef hfdcan1;
 
 UART_HandleTypeDef hlpuart1;
@@ -103,14 +102,13 @@ int main(void)
   MX_GPIO_Init();
   MX_ICACHE_Init();
   MX_TIM2_Init();
-  MX_TIM3_Init();
   MX_FDCAN1_Init();
   MX_LPUART1_UART_Init();
   MX_USB_Device_Init();
   /* USER CODE BEGIN 2 */
   if (!CAN_Interface_Init(&hfdcan1)) Error_Handler();
   Stepper_Init(&htim2);
-  LinearActuator_Init(&htim3);
+  LinearActuator_Init();
   GCode_Init();
   CycleEngine_Init();
   CommandIO_Init(&hlpuart1);
@@ -348,38 +346,6 @@ void MX_LPUART1_UART_Init(void)
 }
 
 /**
-  * @brief TIM3 Initialization Function
-  * @param None
-  * @retval None
-  */
-void MX_TIM3_Init(void)
-{
-  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
-  TIM_MasterConfigTypeDef sMasterConfig = {0};
-  TIM_OC_InitTypeDef sConfigOC = {0};
-
-  htim3.Instance = TIM3;
-  htim3.Init.Prescaler = 109;
-  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim3.Init.Period = 999;
-  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_Base_Init(&htim3) != HAL_OK) Error_Handler();
-  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
-  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK) Error_Handler();
-  if (HAL_TIM_PWM_Init(&htim3) != HAL_OK) Error_Handler();
-  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
-  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK) Error_Handler();
-  sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 0;
-  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
-  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-  if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_1) != HAL_OK) Error_Handler();
-  HAL_TIM_MspPostInit(&htim3);
-}
-
-/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -399,7 +365,7 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOC_CLK_ENABLE();
   HAL_GPIO_WritePin(GPIOA, X_STEP_Pin|Y_STEP_Pin|X_DIR_Pin|Y_DIR_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(GPIOB, Z_STEP_Pin|Z_DIR_Pin, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(GPIOC, LINEAR_ACT_IN1_Pin|LINEAR_ACT_IN2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, LINEAR_ACT_EN_Pin|LINEAR_ACT_IN1_Pin|LINEAR_ACT_IN2_Pin, GPIO_PIN_RESET);
   GPIO_InitStruct.Pin = X_STEP_Pin|Y_STEP_Pin|X_DIR_Pin|Y_DIR_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
@@ -407,7 +373,7 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
   GPIO_InitStruct.Pin = Z_STEP_Pin|Z_DIR_Pin;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-  GPIO_InitStruct.Pin = LINEAR_ACT_IN1_Pin|LINEAR_ACT_IN2_Pin;
+  GPIO_InitStruct.Pin = LINEAR_ACT_EN_Pin|LINEAR_ACT_IN1_Pin|LINEAR_ACT_IN2_Pin;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
   GPIO_InitStruct.Pin = Z_LIMIT_MIN_Pin|Z_LIMIT_MAX_Pin;

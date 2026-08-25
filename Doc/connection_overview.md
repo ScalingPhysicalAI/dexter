@@ -12,7 +12,7 @@
 | Z minimum limit | PC0 | Switch to the configured active level | Internal pull-up |
 | Z maximum limit | PC1 | Switch to the configured active level | Internal pull-up |
 | Emergency stop | PC2 | Normally-open button to GND | Active-low, internal pull-up |
-| Linear actuator enable | PC6, TIM3_CH1 | H-bridge ENA/PWM | 1 kHz, 0-100% duty; do not drive motor directly |
+| Linear actuator enable | PC6 GPIO | H-bridge ENA | HIGH to run, LOW to stop; do not drive motor directly |
 | Linear actuator direction | PC7 IN1, PC8 IN2 | H-bridge direction inputs | IN1 extends, IN2 retracts, both low stops |
 | USB CDC | PA11 DM, PA12 DP | USB host | Command interface |
 | LPUART1 | PG7 TX, PG8 RX | Adapter RX, adapter TX | Cross TX/RX; 115200 8-N-1 |
