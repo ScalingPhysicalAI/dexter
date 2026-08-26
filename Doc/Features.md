@@ -29,6 +29,8 @@
 | F-23 | Linear actuator safety-stop integration | Safety | Done | Hold, STOP, program end, M112, and physical E-stop remove drive |
 | F-24 | AS5600 Z-axis position feedback | Feedback | Done | I2C1 PB6/PB7, 100 Hz angle/magnet diagnostics, relative multi-turn tracking |
 | F-25 | AS5600 command and direction settings | Settings | Done | `AS5600?`, zero, direction, `$25`, and compact status field on all command sources |
+| F-26 | Bounded closed-loop Z missed-step recovery | Motion/feedback | Done | Post-move Z-only catch-up, tolerance/speed/travel/timeout settings, queue and cycle wait integration |
+| F-27 | Z feedback correction fault handling | Safety | Done | Sensor-invalid, no-progress, timeout, limit, STOP, and E-stop termination paths |
 
 ## Suggested features
 
@@ -42,7 +44,7 @@
 | Medium | Automated hardware-in-loop regression tests | Suggested | Prevents interface and motion regressions | USB/UART/CAN/motion safety suite runs unattended |
 | Medium | CAN heartbeat, node ID, sequence number, and access ownership | Suggested | Detects disconnects and competing controllers | Lost heartbeat stops motion under configured policy |
 | Medium | Motion look-ahead and junction planning | Suggested | Smoother multi-segment paths | Continuous paths meet configured acceleration limits |
-| Medium | Configurable Z following-error alarm using AS5600 feedback | Suggested | Detects missed steps and mechanical blockage | Sustained calibrated position mismatch raises a controlled fault |
+| Medium | Hardware-characterized Z feedback tuning and fault injection | Suggested | Establishes safe production tolerance and correction limits | Tests cover missed steps, jam, reversed encoder, unplugged sensor, limits, and E-stop |
 | Medium | CANopen or J1939-compatible application profile | Suggested | Easier system integration | Interoperability test passes with selected ecosystem |
 | Low | Secure signed firmware update and rollback | Suggested | Safer deployed upgrades | Invalid image is rejected and previous release boots |
 | Low | Telemetry counters and timestamped event history | Suggested | Better diagnostics | Host can read motion, limit, E-stop, CAN, and reset counters |

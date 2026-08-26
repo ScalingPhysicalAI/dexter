@@ -12,10 +12,11 @@
 | 8 | Runtime CAN-ID change, tools, connection image, project documentation | Done | `CANID` command and documentation package |
 | 9 | Linear actuator H-bridge, digital enable, M3/M4/M5, and E-stop integration | Done | Warning-free CubeIDE build and pin/command review |
 | 10 | AS5600 I2C Z feedback, multi-turn tracking, diagnostics, zero, and direction configuration | Done | Warning-free build and command/pin review |
-| 11 | Hardware-in-loop regression rig and automated interface tests | Suggested | Repeatable USB/UART/CAN test report |
-| 12 | Persistent configuration with versioning and CRC | Suggested | Power-cycle retention and corruption test |
-| 13 | Production safety hardware, watchdog, driver-fault feedback | Suggested | Safety review and fault-injection report |
-| 14 | Secure update/recovery and release manufacturing flow | Suggested | Signed update and rollback demonstration |
+| 11 | Bounded AS5600 closed-loop Z catch-up and cycle/queue integration | Done | Warning-free build and state/safety-path review |
+| 12 | Hardware-in-loop regression rig and automated interface tests | Suggested | Repeatable USB/UART/CAN test report |
+| 13 | Persistent configuration with versioning and CRC | Suggested | Power-cycle retention and corruption test |
+| 14 | Production safety hardware, watchdog, driver-fault feedback | Suggested | Safety review and fault-injection report |
+| 15 | Secure update/recovery and release manufacturing flow | Suggested | Signed update and rollback demonstration |
 
 ## Recommended validation sequence
 
@@ -34,3 +35,6 @@
 10. Repeat with expected bus load, disconnected sensors, and power cycling.
 11. Verify AS5600 magnetic status, angle direction, wraparound, zero alignment,
     reported Z error, and behavior during sensor disconnect/reconnect.
+12. Enable `ZCLOSE`, introduce a small known Z position deficit, and verify
+    catch-up within tolerance. Then test reversed feedback, complete jam,
+    correction-travel limit, timeout, both Z limits, STOP, and E-stop.

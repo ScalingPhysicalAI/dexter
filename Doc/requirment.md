@@ -42,6 +42,9 @@ motion and cycle scripts, and place safety inputs ahead of motion continuity.
 | FR-15 | Hold, STOP, program end, remote E-stop, and physical E-stop shall set the linear-actuator enable and both H-bridge direction outputs low. | Oscilloscope and fault-interruption test |
 | FR-16 | AS5600 feedback shall report raw 12-bit angle, magnetic status, relative multi-turn Z position, commanded-position error, and I2C errors. | Rotate through wraparound and query `AS5600?` on USB, UART, and CAN |
 | FR-17 | AS5600 feedback zero and direction shall be runtime configurable without changing motor direction. | `AS5600 ZERO`, `AS5600 DIR`, and `$25` tests |
+| FR-18 | After a commanded Z move, valid AS5600 error outside the configured tolerance shall produce additional Z-only pulses until measured Z reaches the original target. | Introduce known missed motion and verify encoder convergence without changing the logical target |
+| FR-19 | Z correction shall block queued/cycle progression and shall be bounded by correction travel, timeout, no-progress detection, limits, STOP, and E-stop. | Fault injection for every termination path |
+| FR-20 | Missing or invalid AS5600 feedback with correction enabled shall stop recovery and latch a Z-feedback alarm. | Disconnect sensor after a Z move and verify alarm/clear behavior |
 
 ## Software and build requirements
 
@@ -66,5 +69,6 @@ motion and cycle scripts, and place safety inputs ahead of motion continuity.
   before full-force operation.
 - Commands received from different interfaces share one motion queue; system
   integration shall prevent conflicting simultaneous controllers.
-- AS5600 position is monitoring feedback only until direction, scaling, coupling,
-  dropout behavior, and safe following-error thresholds are validated on hardware.
+- AS5600 correction is a software recovery layer, not a safety-rated servo.
+  Direction, scaling, coupling, tolerance, maximum travel, jam behavior, and all
+  stop paths must be validated mechanically unloaded before production use.

@@ -93,7 +93,7 @@ before moving again. Alarm clearing is rejected while the PC2 button is active.
 Set `ESTOP_BUTTON_ENABLE` to `0` in `Core/Inc/main.h` to compile out physical
 button handling; remote emergency-stop commands remain enabled.
 
-Direction and limit settings are runtime settings:
+Direction, limit, and Z-feedback settings are runtime settings:
 
 - `$20=0/1`: normal/inverted X positive direction
 - `$21=0/1`: normal/inverted Y positive direction
@@ -101,9 +101,15 @@ Direction and limit settings are runtime settings:
 - `$23=0/1`: active-low/active-high Z limit inputs
 - `$24=0/1`: disable/enable Z limit enforcement; default is disabled
 - `$25=0/1`: normal/inverted AS5600 feedback direction
+- `$26=0/1`: disable/enable closed-loop Z catch-up; default is enabled
+- `$27=1..1000`: acceptable Z encoder error in steps; default is 8
+- `$28=20..10000`: correction-pulse speed in steps/s; default is 250
+- `$29=1..100000`: maximum extra correction pulses per move; default is 1000
+- `$30=100..60000`: correction timeout after the primary move; default is 8000 ms
 - `DIR X|Y|Z NORMAL|REVERSE|TOGGLE`: readable motor-direction command
 - `LIMIT ON|OFF`: readable limit enable/disable command
-- `$20` through `$25`, `DIR?`, or `LIMIT?`: query settings
+- `ZCLOSE ON|OFF` and `ZCLOSE?`: readable Z correction control/status
+- `$20` through `$30`, `DIR?`, `LIMIT?`, or `ZCLOSE?`: query settings
 - `$`: print all motion and calibration settings
 
 The Z minimum and maximum inputs are checked in the timer ISR before every Z
@@ -124,8 +130,20 @@ USB, LPUART1, CAN, and scripts.
 The AS5600 is an absolute single-turn sensor. Firmware extends it to a relative
 multi-turn position by tracking wraparound while powered. Run `AS5600 ZERO`
 after installation, and again if the mechanism moved while the controller or
-sensor was unpowered. Feedback is diagnostic only in this release; it does not
-automatically correct motion or trigger E-stop.
+sensor was unpowered.
+
+Closed-loop Z catch-up is enabled by default. After the coordinated move ends,
+the controller waits for a fresh encoder sample. If measured Z is outside `$27`,
+it generates Z-only correction pulses at `$28` until the requested coordinate
+is reached. The cycle engine and queued commands wait for this stage. Extra
+pulses do not change the requested logical Z coordinate. `?` reports
+`ZCtl:ON|OFF,ACTIVE|IDLE,correction_steps`.
+
+Correction is bounded by `$29`, `$30`, three no-progress attempts, both Z limit
+inputs, STOP/hold, and all E-stop paths. An invalid AS5600, timeout, correction
+limit, or lack of progress stops Z and raises `ALARM:Z feedback ...`; inspect
+the sensor/mechanism and use `CLEAR ALARM` only after the cause is safe. Use
+`ZCLOSE OFF` for intentional open-loop commissioning.
 
 ## Cycle engine and host scripts
 

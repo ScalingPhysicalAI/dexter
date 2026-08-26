@@ -6,6 +6,7 @@
 #include "linear_actuator.h"
 #include "main.h"
 #include "stepper.h"
+#include <limits.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -15,6 +16,9 @@
 #define DEFAULT_STEPS_PER_REV 3200U
 #define DEFAULT_UM_PER_REV 8000U
 #define COMMAND_QUEUE_DEPTH 32U
+#define Z_FEEDBACK_SETTLE_MS 30U
+#define Z_FEEDBACK_SENSOR_GRACE_MS 300U
+#define Z_FEEDBACK_NO_PROGRESS_LIMIT 3U
 
 typedef enum { DIST_ABSOLUTE = 0, DIST_RELATIVE } DistanceMode;
 
@@ -27,6 +31,13 @@ typedef struct {
     char line[GCODE_LINE_MAX];
     CommandSource source;
 } QueuedCommand;
+
+typedef enum {
+    ZFB_IDLE = 0,
+    ZFB_PRIMARY_MOVE,
+    ZFB_SETTLING,
+    ZFB_CORRECTION_MOVE
+} ZFeedbackState;
 
 static struct {
     InputBuffer input[COMMAND_SOURCE_COUNT];
@@ -52,6 +63,20 @@ static struct {
 static CommandSource s_response_source = COMMAND_SOURCE_USB;
 static volatile bool s_estop_latched;
 static volatile bool s_estop_report_pending;
+static struct {
+    ZFeedbackState state;
+    bool enabled;
+    int32_t target_steps;
+    uint32_t tolerance_steps;
+    uint32_t correction_speed_sps;
+    uint32_t max_correction_steps;
+    uint32_t timeout_ms;
+    uint32_t correction_start_ms;
+    uint32_t settle_start_ms;
+    uint32_t correction_steps_used;
+    uint32_t previous_abs_error;
+    uint8_t no_progress_count;
+} zfb;
 
 static const char s_command_help[] =
     "\r\n=== Dexter STM32L552ZET6 motion controller ===\r\n"
@@ -68,6 +93,8 @@ static const char s_command_help[] =
     "Direction: DIR X|Y|Z NORMAL|REVERSE (or $20/$21/$22=0|1)\r\n"
     "Limits: LIMIT ON|OFF, $23=polarity, $24=enable (default OFF)\r\n"
     "Z feedback: AS5600?, AS5600 ZERO, AS5600 DIR NORMAL|REVERSE ($25)\r\n"
+    "Z correction: ZCLOSE ON|OFF; $26 enable, $27 tolerance, $28 speed\r\n"
+    "              $29 max correction steps, $30 timeout ms\r\n"
     "CAN 500k: CAN STATUS, CAN TEST; IDs: CANID <RX> <TX>, CANID?\r\n"
     "Cycles: LIST, RUN <name>, MACRO <name>, STOP\r\n"
     "Type HELP to print this guide again.\r\n"
@@ -170,6 +197,7 @@ static bool take_estop_report_pending(void)
 static void enter_estop_alarm(void)
 {
     LinearActuator_Stop();
+    zfb.state = ZFB_IDLE;
     CycleEngine_Stop();
     gc.dwelling = false;
     gc.queue_head = gc.queue_tail = 0U;
@@ -183,6 +211,7 @@ static void trigger_estop_command(void)
 {
     Stepper_StopAll();
     LinearActuator_Stop();
+    zfb.state = ZFB_IDLE;
     s_estop_latched = true;
     s_estop_report_pending = true;
     (void)take_estop_report_pending();
@@ -218,6 +247,7 @@ static void unlock_alarms(void)
         return;
     }
     gc.alarm = false;
+    zfb.state = ZFB_IDLE;
     Stepper_ClearLimitStopped();
     send_ok();
 }
@@ -317,22 +347,171 @@ static char *append_position(char *out, int32_t steps, uint8_t axis)
     return out;
 }
 
+static bool zfeedback_active(void)
+{
+    return zfb.state != ZFB_IDLE;
+}
+
+bool GCode_IsMotionBusy(void)
+{
+    return Stepper_IsBusy() || zfeedback_active();
+}
+
+bool GCode_HasAlarm(void)
+{
+    return gc.alarm;
+}
+
+static void zfeedback_begin(int32_t target_steps)
+{
+    if (!zfb.enabled) {
+        zfb.state = ZFB_IDLE;
+        return;
+    }
+    zfb.target_steps = target_steps;
+    zfb.correction_steps_used = 0U;
+    zfb.previous_abs_error = 0U;
+    zfb.no_progress_count = 0U;
+    zfb.state = ZFB_PRIMARY_MOVE;
+}
+
+static void zfeedback_broadcast_alarm(const char *reason)
+{
+    char buffer[80];
+    char *out = append_text(buffer, "ALARM:Z feedback ");
+    out = append_text(out, reason);
+    out = append_text(out, "\r\n");
+    *out = '\0';
+    GCode_SendTo(COMMAND_SOURCE_USB, buffer);
+    GCode_SendTo(COMMAND_SOURCE_UART, buffer);
+    GCode_SendTo(COMMAND_SOURCE_CAN, buffer);
+}
+
+static void zfeedback_fault(const char *reason)
+{
+    AS5600_Status encoder;
+    Stepper_StopAll();
+    AS5600_GetStatus(&encoder);
+    if (encoder.valid) {
+        Stepper_SetPosition(AXIS_Z, encoder.position_steps);
+        gc.work_position[AXIS_Z] = encoder.position_steps + gc.offset[AXIS_Z];
+    }
+    zfb.state = ZFB_IDLE;
+    gc.alarm = true;
+    CycleEngine_Stop();
+    zfeedback_broadcast_alarm(reason);
+}
+
+static void zfeedback_start_settle(uint32_t now)
+{
+    Stepper_SetPosition(AXIS_Z, zfb.target_steps);
+    zfb.settle_start_ms = now;
+    zfb.state = ZFB_SETTLING;
+}
+
+static void zfeedback_poll(void)
+{
+    if (!zfeedback_active() || gc.alarm || s_estop_latched) return;
+
+    uint32_t now = HAL_GetTick();
+    if (zfb.state == ZFB_PRIMARY_MOVE) {
+        if (!Stepper_IsBusy()) {
+            zfb.correction_start_ms = now;
+            zfeedback_start_settle(now);
+        }
+        return;
+    }
+
+    if ((uint32_t)(now - zfb.correction_start_ms) > zfb.timeout_ms) {
+        zfeedback_fault("timeout");
+        return;
+    }
+
+    if (zfb.state == ZFB_CORRECTION_MOVE) {
+        if (!Stepper_IsBusy()) zfeedback_start_settle(now);
+        return;
+    }
+
+    if ((uint32_t)(now - zfb.settle_start_ms) < Z_FEEDBACK_SETTLE_MS) return;
+
+    AS5600_Status encoder;
+    AS5600_GetStatus(&encoder);
+    bool fresh_sample = encoder.last_update_ms != 0U &&
+                        (int32_t)(encoder.last_update_ms - zfb.settle_start_ms) > 0;
+    if (!encoder.valid || !fresh_sample) {
+        if ((uint32_t)(now - zfb.settle_start_ms) >= Z_FEEDBACK_SENSOR_GRACE_MS) {
+            zfeedback_fault("sensor invalid");
+        }
+        return;
+    }
+
+    int64_t error64 = (int64_t)zfb.target_steps - (int64_t)encoder.position_steps;
+    uint64_t absolute_error64 = (uint64_t)(error64 < 0 ? -error64 : error64);
+    if (absolute_error64 > UINT32_MAX) {
+        zfeedback_fault("position range");
+        return;
+    }
+    uint32_t absolute_error = (uint32_t)absolute_error64;
+    if (absolute_error <= zfb.tolerance_steps) {
+        Stepper_SetPosition(AXIS_Z, zfb.target_steps);
+        zfb.state = ZFB_IDLE;
+        return;
+    }
+
+    if (zfb.previous_abs_error != 0U && absolute_error >= zfb.previous_abs_error) {
+        if (++zfb.no_progress_count >= Z_FEEDBACK_NO_PROGRESS_LIMIT) {
+            zfeedback_fault("no progress");
+            return;
+        }
+    } else {
+        zfb.no_progress_count = 0U;
+    }
+    zfb.previous_abs_error = absolute_error;
+
+    if (zfb.correction_steps_used >= zfb.max_correction_steps) {
+        zfeedback_fault("correction limit");
+        return;
+    }
+    uint32_t remaining = zfb.max_correction_steps - zfb.correction_steps_used;
+    uint32_t requested = absolute_error > remaining ? remaining : absolute_error;
+    int32_t correction = error64 < 0 ? -(int32_t)requested : (int32_t)requested;
+    int64_t correction_target = (int64_t)zfb.target_steps + correction;
+    if (correction_target < INT32_MIN || correction_target > INT32_MAX) {
+        zfeedback_fault("position range");
+        return;
+    }
+    int32_t targets[NUM_AXES] = {
+        Stepper_GetPos(AXIS_X), Stepper_GetPos(AXIS_Y),
+        (int32_t)correction_target
+    };
+    if (!Stepper_MoveCoordinated(targets, zfb.correction_speed_sps)) {
+        zfeedback_fault("move rejected");
+        return;
+    }
+    zfb.correction_steps_used += requested;
+    zfb.state = ZFB_CORRECTION_MOVE;
+}
+
 static void send_status(void)
 {
-    char buffer[320];
+    char buffer[384];
     char *out = buffer;
     const char *state = gc.alarm ? "Alarm" : gc.paused ? "Hold" :
-                        (Stepper_IsBusy() || LinearActuator_IsBusy()) ? "Run" : "Idle";
+                        (GCode_IsMotionBusy() || LinearActuator_IsBusy()) ? "Run" : "Idle";
     out = append_text(out, "<");
     out = append_text(out, state);
     out = append_text(out, "|MPos:");
     for (uint8_t axis = 0U; axis < NUM_AXES; ++axis) {
-        out = append_position(out, Stepper_GetPos(axis), axis);
+        int32_t position = (axis == AXIS_Z && zfeedback_active()) ?
+                           zfb.target_steps : Stepper_GetPos(axis);
+        out = append_position(out, position, axis);
         if (axis != AXIS_Z) *out++ = ',';
     }
     out = append_text(out, "|WPos:");
     for (uint8_t axis = 0U; axis < NUM_AXES; ++axis) {
-        out = append_position(out, Stepper_GetPos(axis) + gc.offset[axis], axis);
+        int32_t position = (axis == AXIS_Z && zfeedback_active()) ?
+                           zfb.target_steps : Stepper_GetPos(axis);
+        out = append_position(out, position + gc.offset[axis], axis);
         if (axis != AXIS_Z) *out++ = ',';
     }
     out = append_text(out, "|F:");
@@ -354,10 +533,12 @@ static void send_status(void)
     AS5600_Status encoder;
     AS5600_GetStatus(&encoder);
     out = append_text(out, "|ZFb:");
+    int32_t feedback_reference = zfeedback_active() ? zfb.target_steps :
+                                                     Stepper_GetPos(AXIS_Z);
     if (encoder.valid) {
         out = append_position(out, encoder.position_steps, AXIS_Z);
         *out++ = ',';
-        out = append_position(out, encoder.position_steps - Stepper_GetPos(AXIS_Z), AXIS_Z);
+        out = append_position(out, encoder.position_steps - feedback_reference, AXIS_Z);
         out = append_text(out, ",OK");
     } else if (!encoder.online) {
         out = append_text(out, "NA,NA,OFF");
@@ -370,6 +551,10 @@ static void send_status(void)
     } else {
         out = append_text(out, "NA,NA,INVALID");
     }
+    out = append_text(out, "|ZCtl:");
+    out = append_text(out, zfb.enabled ? "ON," : "OFF,");
+    out = append_text(out, zfeedback_active() ? "ACTIVE," : "IDLE,");
+    out = append_u32(out, zfb.correction_steps_used);
     const char *macro = CycleEngine_GetCurrentName();
     if (*macro != '\0') {
         out = append_text(out, "|CE:");
@@ -407,6 +592,42 @@ static void print_settings(void)
     send_value("$23=", Limit_GetActiveHigh() ? 1 : 0, " ;limit active-high\r\n");
     send_value("$24=", Limit_GetEnabled() ? 1 : 0, " ;Z limits enabled\r\n");
     send_value("$25=", AS5600_GetInverted() ? 1 : 0, " ;AS5600 direction invert\r\n");
+    send_value("$26=", zfb.enabled ? 1 : 0, " ;Z encoder correction enable\r\n");
+    send_value("$27=", (int32_t)zfb.tolerance_steps, " ;Z feedback tolerance steps\r\n");
+    send_value("$28=", (int32_t)zfb.correction_speed_sps, " ;Z correction speed sps\r\n");
+    send_value("$29=", (int32_t)zfb.max_correction_steps, " ;Z max correction steps\r\n");
+    send_value("$30=", (int32_t)zfb.timeout_ms, " ;Z correction timeout ms\r\n");
+    send_ok();
+}
+
+static void send_zclose_status(void)
+{
+    send_value("ZCLOSE=", zfb.enabled ? 1 : 0, " ;0=off 1=on\r\n");
+    send_value("TOLERANCE=", (int32_t)zfb.tolerance_steps, " ;steps\r\n");
+    send_value("SPEED=", (int32_t)zfb.correction_speed_sps, " ;steps/s\r\n");
+    send_value("MAX_CORRECTION=", (int32_t)zfb.max_correction_steps, " ;steps\r\n");
+    send_value("TIMEOUT=", (int32_t)zfb.timeout_ms, " ;ms\r\n");
+    send_value("ACTIVE=", zfeedback_active() ? 1 : 0, "\r\n");
+    send_ok();
+}
+
+static void parse_zclose_command(const char *line)
+{
+    const char *cursor = line + 6;
+    while (*cursor == ' ' || *cursor == '\t') ++cursor;
+    if (*cursor == '\0' || strcmp(cursor, "?") == 0) {
+        send_zclose_status();
+        return;
+    }
+    if (GCode_IsMotionBusy()) { send_error("busy"); return; }
+    if (strcmp(cursor, "ON") == 0 || strcmp(cursor, "1") == 0) zfb.enabled = true;
+    else if (strcmp(cursor, "OFF") == 0 || strcmp(cursor, "0") == 0) {
+        zfb.enabled = false;
+        zfb.state = ZFB_IDLE;
+    } else {
+        send_error("ZCLOSE value ON or OFF");
+        return;
+    }
     send_ok();
 }
 
@@ -437,10 +658,12 @@ static void send_as5600_status(void)
     out = append_i32(out, status.multi_turn_counts);
     out = append_text(out, " ZPOS_STEPS=");
     out = append_i32(out, status.position_steps);
+    int32_t feedback_reference = zfeedback_active() ? zfb.target_steps :
+                                                     Stepper_GetPos(AXIS_Z);
     out = append_text(out, " ZCMD_STEPS=");
-    out = append_i32(out, Stepper_GetPos(AXIS_Z));
+    out = append_i32(out, feedback_reference);
     out = append_text(out, " ERROR_STEPS=");
-    out = append_i32(out, status.position_steps - Stepper_GetPos(AXIS_Z));
+    out = append_i32(out, status.position_steps - feedback_reference);
     out = append_text(out, " MAG=");
     out = append_text(out, as5600_magnet_state(&status));
     out = append_text(out, " DIR=");
@@ -462,7 +685,7 @@ static void parse_as5600_command(const char *line)
         return;
     }
     if (strcmp(cursor, "ZERO") == 0) {
-        if (Stepper_IsBusy()) { send_error("busy"); return; }
+        if (GCode_IsMotionBusy()) { send_error("busy"); return; }
         AS5600_ZeroAtPosition(Stepper_GetPos(AXIS_Z));
         send_ok();
         return;
@@ -476,7 +699,7 @@ static void parse_as5600_command(const char *line)
             send_ok();
             return;
         }
-        if (Stepper_IsBusy()) { send_error("busy"); return; }
+        if (GCode_IsMotionBusy()) { send_error("busy"); return; }
         bool inverted;
         if (strcmp(cursor, "NORMAL") == 0 || strcmp(cursor, "0") == 0) inverted = false;
         else if (strcmp(cursor, "REVERSE") == 0 || strcmp(cursor, "1") == 0) inverted = true;
@@ -630,7 +853,7 @@ static void send_can_status(void)
 
 static void run_can_test(void)
 {
-    if (Stepper_IsBusy() || CycleEngine_IsBusy()) {
+    if (GCode_IsMotionBusy() || CycleEngine_IsBusy()) {
         send_error("stop motion before CAN TEST");
         return;
     }
@@ -651,8 +874,12 @@ static void parse_setting(const char *line)
     }
     if (strcmp(line, "$H") == 0) {
         int32_t target[NUM_AXES] = {0, 0, 0};
-        if (!Stepper_MoveCoordinated(target, gc.rapid_sps)) send_error("busy");
-        else send_ok();
+        if (GCode_IsMotionBusy() || !Stepper_MoveCoordinated(target, gc.rapid_sps)) {
+            send_error("busy");
+        } else {
+            zfeedback_begin(0);
+            send_ok();
+        }
         return;
     }
     if (strcmp(line, "$20") == 0) { send_value("$20=", Stepper_GetDirectionInverted(AXIS_X) ? 1 : 0, " ;X direction invert\r\n"); send_ok(); return; }
@@ -661,6 +888,11 @@ static void parse_setting(const char *line)
     if (strcmp(line, "$23") == 0) { send_value("$23=", Limit_GetActiveHigh() ? 1 : 0, " ;limit active-high\r\n"); send_ok(); return; }
     if (strcmp(line, "$24") == 0) { send_value("$24=", Limit_GetEnabled() ? 1 : 0, " ;Z limits enabled\r\n"); send_ok(); return; }
     if (strcmp(line, "$25") == 0) { send_value("$25=", AS5600_GetInverted() ? 1 : 0, " ;AS5600 direction invert\r\n"); send_ok(); return; }
+    if (strcmp(line, "$26") == 0) { send_value("$26=", zfb.enabled ? 1 : 0, " ;Z encoder correction enable\r\n"); send_ok(); return; }
+    if (strcmp(line, "$27") == 0) { send_value("$27=", (int32_t)zfb.tolerance_steps, " ;Z feedback tolerance steps\r\n"); send_ok(); return; }
+    if (strcmp(line, "$28") == 0) { send_value("$28=", (int32_t)zfb.correction_speed_sps, " ;Z correction speed sps\r\n"); send_ok(); return; }
+    if (strcmp(line, "$29") == 0) { send_value("$29=", (int32_t)zfb.max_correction_steps, " ;Z max correction steps\r\n"); send_ok(); return; }
+    if (strcmp(line, "$30") == 0) { send_value("$30=", (int32_t)zfb.timeout_ms, " ;Z correction timeout ms\r\n"); send_ok(); return; }
 
     const char *cursor = line + 1;
     uint32_t number = 0U;
@@ -670,7 +902,7 @@ static void parse_setting(const char *line)
     uint32_t value;
     if (!parse_unsigned(cursor, &value)) { send_error("bad value"); return; }
 
-    if (Stepper_IsBusy() && number >= 20U && number <= 25U) { send_error("busy"); return; }
+    if (GCode_IsMotionBusy() && number >= 20U && number <= 30U) { send_error("busy"); return; }
     if ((number == 0U || number == 1U || number == 4U || number == 5U || number == 6U) &&
         (value < STEPPER_MIN_SPEED_SPS || value > STEPPER_MAX_SPEED_SPS)) {
         send_error("speed range 20..10000"); return;
@@ -682,8 +914,20 @@ static void parse_setting(const char *line)
          number == 15U || number == 16U) && value == 0U) {
         send_error("calibration must be >0"); return;
     }
-    if ((number == 14U || (number >= 20U && number <= 25U)) && value > 1U) {
+    if ((number == 14U || (number >= 20U && number <= 26U)) && value > 1U) {
         send_error("boolean must be 0 or 1"); return;
+    }
+    if (number == 27U && (value == 0U || value > 1000U)) {
+        send_error("Z tolerance range 1..1000"); return;
+    }
+    if (number == 28U && (value < STEPPER_MIN_SPEED_SPS || value > STEPPER_MAX_SPEED_SPS)) {
+        send_error("Z correction speed range 20..10000"); return;
+    }
+    if (number == 29U && (value == 0U || value > 100000U)) {
+        send_error("Z max correction range 1..100000"); return;
+    }
+    if (number == 30U && (value < 100U || value > 60000U)) {
+        send_error("Z timeout range 100..60000"); return;
     }
     switch (number) {
         case 0: gc.max_sps[AXIS_X] = value; Stepper_SetSpeed(AXIS_X, value); break;
@@ -714,18 +958,24 @@ static void parse_setting(const char *line)
             AS5600_SetInverted(value != 0U);
             AS5600_ZeroAtPosition(Stepper_GetPos(AXIS_Z));
             break;
+        case 26: zfb.enabled = value != 0U; zfb.state = ZFB_IDLE; break;
+        case 27: zfb.tolerance_steps = value; break;
+        case 28: zfb.correction_speed_sps = value; break;
+        case 29: zfb.max_correction_steps = value; break;
+        case 30: zfb.timeout_ms = value; break;
         default: send_error("unknown setting"); return;
     }
     send_ok();
 }
 
-static bool start_move(int32_t target[NUM_AXES], uint32_t speed)
+static bool start_move(int32_t target[NUM_AXES], uint32_t speed, bool correct_z)
 {
     if (s_estop_latched || gc.alarm || gc.paused) { send_error("hold/alarm"); return false; }
-    if (Stepper_IsBusy()) { send_error("busy"); return false; }
+    if (GCode_IsMotionBusy()) { send_error("busy"); return false; }
     int32_t machine_target[NUM_AXES];
     for (uint8_t axis = 0U; axis < NUM_AXES; ++axis) machine_target[axis] = target[axis] - gc.offset[axis];
     if (!Stepper_MoveCoordinated(machine_target, speed)) { send_error("move rejected"); return false; }
+    if (correct_z) zfeedback_begin(machine_target[AXIS_Z]);
     for (uint8_t axis = 0U; axis < NUM_AXES; ++axis) gc.work_position[axis] = target[axis] + gc.offset[axis];
     send_ok();
     return true;
@@ -758,7 +1008,7 @@ static void parse_direction_command(const char *line)
         send_ok();
         return;
     }
-    if (Stepper_IsBusy()) { send_error("busy"); return; }
+    if (GCode_IsMotionBusy()) { send_error("busy"); return; }
 
     bool inverted;
     if (strcmp(cursor, "NORMAL") == 0 || strcmp(cursor, "0") == 0) inverted = false;
@@ -779,7 +1029,7 @@ static void parse_limit_command(const char *line)
         send_ok();
         return;
     }
-    if (Stepper_IsBusy()) { send_error("busy"); return; }
+    if (GCode_IsMotionBusy()) { send_error("busy"); return; }
 
     bool enabled;
     if (strcmp(cursor, "ON") == 0 || strcmp(cursor, "1") == 0) enabled = true;
@@ -802,6 +1052,8 @@ static bool execute_line(CommandSource source, char *line, bool script)
     if (strcmp(line, "HELP") == 0) { GCode_Send(s_command_help); return true; }
     if (strcmp(line, "AS5600") == 0 || strcmp(line, "AS5600?") == 0 ||
         strncmp(line, "AS5600 ", 7U) == 0) { parse_as5600_command(line); return true; }
+    if (strcmp(line, "ZCLOSE") == 0 || strcmp(line, "ZCLOSE?") == 0 ||
+        strncmp(line, "ZCLOSE ", 7U) == 0) { parse_zclose_command(line); return true; }
     if (strcmp(line, "CANID") == 0 || strcmp(line, "CANID?") == 0 ||
         strncmp(line, "CANID ", 6U) == 0) { parse_can_id_command(line); return true; }
     if (strcmp(line, "CAN STATUS") == 0) { send_can_status(); return true; }
@@ -825,6 +1077,7 @@ static bool execute_line(CommandSource source, char *line, bool script)
     if (strcmp(line, "?") == 0) { send_status(); return true; }
     if (strcmp(line, "!") == 0) {
         Stepper_StopAll();
+        zfb.state = ZFB_IDLE;
         LinearActuator_Stop();
         gc.paused = true;
         CycleEngine_Stop();
@@ -836,6 +1089,7 @@ static bool execute_line(CommandSource source, char *line, bool script)
     if (strcmp(line, "LIST") == 0) { CycleEngine_List(source); send_ok(); return true; }
     if (strcmp(line, "STOP") == 0) {
         Stepper_StopAll();
+        zfb.state = ZFB_IDLE;
         LinearActuator_Stop();
         CycleEngine_Stop();
         send_ok();
@@ -859,6 +1113,7 @@ static bool execute_line(CommandSource source, char *line, bool script)
         if (m == 0 || m == 1) { gc.paused = true; send_ok(); return true; }
         if (m == 2 || m == 18 || m == 30 || m == 84) {
             Stepper_StopAll();
+            zfb.state = ZFB_IDLE;
             LinearActuator_Stop();
             send_ok();
             return true;
@@ -929,7 +1184,7 @@ static bool execute_line(CommandSource source, char *line, bool script)
                 }
                 gc.feed_sps = speed;
             }
-            return start_move(target, speed);
+            return start_move(target, speed, has_z);
         }
         case 4:
             if (!has_p) { send_error("G4 needs P"); return false; }
@@ -939,12 +1194,12 @@ static bool execute_line(CommandSource source, char *line, bool script)
             return true;
         case 28: {
             int32_t target[NUM_AXES] = {0, 0, 0};
-            return start_move(target, gc.rapid_sps);
+            return start_move(target, gc.rapid_sps, true);
         }
         case 90: gc.distance_mode = DIST_ABSOLUTE; send_ok(); return true;
         case 91: gc.distance_mode = DIST_RELATIVE; send_ok(); return true;
         case 92:
-            if (Stepper_IsBusy()) { send_error("busy"); return false; }
+            if (GCode_IsMotionBusy()) { send_error("busy"); return false; }
             if (has_x) { int32_t v = gc.unit_mm ? tenths_mm_to_steps(x10, AXIS_X) : tenths_to_integer(x10); gc.offset[AXIS_X] = v - Stepper_GetPos(AXIS_X); gc.work_position[AXIS_X] = v; }
             if (has_y) { int32_t v = gc.unit_mm ? tenths_mm_to_steps(y10, AXIS_Y) : tenths_to_integer(y10); gc.offset[AXIS_Y] = v - Stepper_GetPos(AXIS_Y); gc.work_position[AXIS_Y] = v; }
             if (has_z) { int32_t v = gc.unit_mm ? tenths_mm_to_steps(z10, AXIS_Z) : tenths_to_integer(z10); gc.offset[AXIS_Z] = v - Stepper_GetPos(AXIS_Z); gc.work_position[AXIS_Z] = v; }
@@ -972,7 +1227,7 @@ static bool command_is_realtime(const char *line)
 
 static bool command_processing_busy(void)
 {
-    return Stepper_IsBusy() || gc.dwelling || CycleEngine_IsBusy();
+    return GCode_IsMotionBusy() || gc.dwelling || CycleEngine_IsBusy();
 }
 
 static void submit_line(CommandSource source, char *line)
@@ -995,9 +1250,15 @@ static void submit_line(CommandSource source, char *line)
 void GCode_Init(void)
 {
     memset(&gc, 0, sizeof(gc));
+    memset(&zfb, 0, sizeof(zfb));
     gc.distance_mode = DIST_ABSOLUTE;
     gc.feed_sps = DEFAULT_FEED_SPS;
     gc.rapid_sps = DEFAULT_RAPID_SPS;
+    zfb.enabled = Z_FEEDBACK_CLOSED_LOOP_DEFAULT != 0U;
+    zfb.tolerance_steps = Z_FEEDBACK_TOLERANCE_STEPS_DEFAULT;
+    zfb.correction_speed_sps = Z_FEEDBACK_CORRECTION_SPEED_SPS_DEFAULT;
+    zfb.max_correction_steps = Z_FEEDBACK_MAX_CORRECTION_STEPS_DEFAULT;
+    zfb.timeout_ms = Z_FEEDBACK_TIMEOUT_MS_DEFAULT;
     for (uint8_t axis = 0U; axis < NUM_AXES; ++axis) {
         gc.accel[axis] = STEPPER_DEFAULT_ACCEL_SPS2;
         gc.max_sps[axis] = STEPPER_DEFAULT_MAX_SPEED_SPS;
@@ -1045,11 +1306,13 @@ void GCode_Poll(void)
     if (take_estop_report_pending()) enter_estop_alarm();
     if (gc.dwelling && (int32_t)(HAL_GetTick() - gc.dwell_end_ms) >= 0) gc.dwelling = false;
     if (Stepper_LimitStopped() && !gc.alarm) {
+        zfb.state = ZFB_IDLE;
         gc.alarm = true;
         GCode_SendTo(COMMAND_SOURCE_USB, "ALARM:Z limit\r\n");
         GCode_SendTo(COMMAND_SOURCE_UART, "ALARM:Z limit\r\n");
         GCode_SendTo(COMMAND_SOURCE_CAN, "ALARM:Z limit\r\n");
     }
+    zfeedback_poll();
     CycleEngine_Poll();
     if (!command_processing_busy() && gc.queue_tail != gc.queue_head) {
         QueuedCommand *command = &gc.queue[gc.queue_tail];

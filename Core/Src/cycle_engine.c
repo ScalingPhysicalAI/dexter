@@ -193,7 +193,10 @@ void CycleEngine_Poll(void)
             s_state = CE_IDLE;
             return;
         case CE_WAIT_MOTION:
-            if (!Stepper_IsBusy()) {
+            if (GCode_HasAlarm()) {
+                send_to(s_source, "[CE:error motion alarm]\r\n");
+                s_state = CE_IDLE;
+            } else if (!GCode_IsMotionBusy()) {
                 if (Stepper_LimitStopped()) {
                     send_to(s_source, "[CE:error Z limit]\r\n");
                     s_state = CE_IDLE;
@@ -223,7 +226,7 @@ void CycleEngine_Poll(void)
             if (dwell) {
                 s_dwell_end = HAL_GetTick() + dwell_ms;
                 s_state = CE_WAIT_DWELL;
-            } else if (Stepper_IsBusy()) {
+            } else if (GCode_IsMotionBusy()) {
                 s_state = CE_WAIT_MOTION;
             } else {
                 ++s_step;
