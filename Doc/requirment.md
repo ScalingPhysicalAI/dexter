@@ -19,6 +19,7 @@ motion and cycle scripts, and place safety inputs ahead of motion continuity.
 | HW-07 | CAN-H/CAN-L shall be terminated with 120 ohm only at the two bus ends. | Powered-off resistance and wiring inspection |
 | HW-08 | All logic interfaces shall share a valid common ground and remain within 3.3 V GPIO ratings. | Electrical inspection |
 | HW-09 | Linear actuator ENA, IN1, and IN2 shall use PC6, PC7, and PC8 GPIO outputs through an external H-bridge. | IOC inspection and unloaded actuator test |
+| HW-10 | AS5600 Z feedback shall use I2C1 on PB6 SCL and PB7 SDA at address 0x36 with external pull-ups to 3.3 V. | IOC inspection, I2C analyzer, and angle test |
 
 ## Functional requirements
 
@@ -39,6 +40,8 @@ motion and cycle scripts, and place safety inputs ahead of motion continuity.
 | FR-13 | `M3 S<ms>` shall extend and `M4 S<ms>` shall retract the linear actuator at full DC output, with `S=0` meaning continuous operation. | Direction, enable-level, and timed-stop tests |
 | FR-14 | `M5` shall stop the linear actuator immediately from USB, LPUART1, CAN, or a script. | Execute during actuator operation on every interface |
 | FR-15 | Hold, STOP, program end, remote E-stop, and physical E-stop shall set the linear-actuator enable and both H-bridge direction outputs low. | Oscilloscope and fault-interruption test |
+| FR-16 | AS5600 feedback shall report raw 12-bit angle, magnetic status, relative multi-turn Z position, commanded-position error, and I2C errors. | Rotate through wraparound and query `AS5600?` on USB, UART, and CAN |
+| FR-17 | AS5600 feedback zero and direction shall be runtime configurable without changing motor direction. | `AS5600 ZERO`, `AS5600 DIR`, and `$25` tests |
 
 ## Software and build requirements
 
@@ -63,3 +66,5 @@ motion and cycle scripts, and place safety inputs ahead of motion continuity.
   before full-force operation.
 - Commands received from different interfaces share one motion queue; system
   integration shall prevent conflicting simultaneous controllers.
+- AS5600 position is monitoring feedback only until direction, scaling, coupling,
+  dropout behavior, and safe following-error thresholds are validated on hardware.

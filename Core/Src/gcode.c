@@ -1,4 +1,5 @@
 #include "gcode.h"
+#include "as5600.h"
 #include "can_interface.h"
 #include "cycle_engine.h"
 #include "limit_switches.h"
@@ -66,6 +67,7 @@ static const char s_command_help[] =
 #endif
     "Direction: DIR X|Y|Z NORMAL|REVERSE (or $20/$21/$22=0|1)\r\n"
     "Limits: LIMIT ON|OFF, $23=polarity, $24=enable (default OFF)\r\n"
+    "Z feedback: AS5600?, AS5600 ZERO, AS5600 DIR NORMAL|REVERSE ($25)\r\n"
     "CAN 500k: CAN STATUS, CAN TEST; IDs: CANID <RX> <TX>, CANID?\r\n"
     "Cycles: LIST, RUN <name>, MACRO <name>, STOP\r\n"
     "Type HELP to print this guide again.\r\n"
@@ -317,7 +319,7 @@ static char *append_position(char *out, int32_t steps, uint8_t axis)
 
 static void send_status(void)
 {
-    char buffer[224];
+    char buffer[320];
     char *out = buffer;
     const char *state = gc.alarm ? "Alarm" : gc.paused ? "Hold" :
                         (Stepper_IsBusy() || LinearActuator_IsBusy()) ? "Run" : "Idle";
@@ -349,6 +351,25 @@ static void send_status(void)
     if (actuator_direction == LINEAR_ACTUATOR_EXTEND) out = append_text(out, "EXT");
     else if (actuator_direction == LINEAR_ACTUATOR_RETRACT) out = append_text(out, "RET");
     else out = append_text(out, "STOP");
+    AS5600_Status encoder;
+    AS5600_GetStatus(&encoder);
+    out = append_text(out, "|ZFb:");
+    if (encoder.valid) {
+        out = append_position(out, encoder.position_steps, AXIS_Z);
+        *out++ = ',';
+        out = append_position(out, encoder.position_steps - Stepper_GetPos(AXIS_Z), AXIS_Z);
+        out = append_text(out, ",OK");
+    } else if (!encoder.online) {
+        out = append_text(out, "NA,NA,OFF");
+    } else if (!encoder.magnet_detected) {
+        out = append_text(out, "NA,NA,NOMAG");
+    } else if (encoder.magnet_too_weak) {
+        out = append_text(out, "NA,NA,WEAK");
+    } else if (encoder.magnet_too_strong) {
+        out = append_text(out, "NA,NA,STRONG");
+    } else {
+        out = append_text(out, "NA,NA,INVALID");
+    }
     const char *macro = CycleEngine_GetCurrentName();
     if (*macro != '\0') {
         out = append_text(out, "|CE:");
@@ -385,7 +406,88 @@ static void print_settings(void)
     send_value("$22=", Stepper_GetDirectionInverted(AXIS_Z) ? 1 : 0, " ;Z direction invert\r\n");
     send_value("$23=", Limit_GetActiveHigh() ? 1 : 0, " ;limit active-high\r\n");
     send_value("$24=", Limit_GetEnabled() ? 1 : 0, " ;Z limits enabled\r\n");
+    send_value("$25=", AS5600_GetInverted() ? 1 : 0, " ;AS5600 direction invert\r\n");
     send_ok();
+}
+
+static const char *as5600_magnet_state(const AS5600_Status *status)
+{
+    if (!status->online) return "OFF";
+    if (!status->magnet_detected) return "NOMAG";
+    if (status->magnet_too_weak) return "WEAK";
+    if (status->magnet_too_strong) return "STRONG";
+    return status->valid ? "OK" : "INVALID";
+}
+
+static void send_as5600_status(void)
+{
+    AS5600_Status status;
+    char buffer[192];
+    char *out = buffer;
+    AS5600_GetStatus(&status);
+    out = append_text(out, "AS5600 ONLINE=");
+    out = append_u32(out, status.online ? 1U : 0U);
+    out = append_text(out, " VALID=");
+    out = append_u32(out, status.valid ? 1U : 0U);
+    out = append_text(out, " RAW=");
+    out = append_u32(out, status.raw_angle);
+    out = append_text(out, " DEG10=");
+    out = append_u32(out, status.angle_tenths_deg);
+    out = append_text(out, " COUNT=");
+    out = append_i32(out, status.multi_turn_counts);
+    out = append_text(out, " ZPOS_STEPS=");
+    out = append_i32(out, status.position_steps);
+    out = append_text(out, " ZCMD_STEPS=");
+    out = append_i32(out, Stepper_GetPos(AXIS_Z));
+    out = append_text(out, " ERROR_STEPS=");
+    out = append_i32(out, status.position_steps - Stepper_GetPos(AXIS_Z));
+    out = append_text(out, " MAG=");
+    out = append_text(out, as5600_magnet_state(&status));
+    out = append_text(out, " DIR=");
+    out = append_text(out, status.inverted ? "REVERSE" : "NORMAL");
+    out = append_text(out, " I2CERR=");
+    out = append_u32(out, status.i2c_error_count);
+    out = append_text(out, "\r\n");
+    *out = '\0';
+    GCode_Send(buffer);
+    send_ok();
+}
+
+static void parse_as5600_command(const char *line)
+{
+    const char *cursor = line + 6;
+    while (*cursor == ' ' || *cursor == '\t') ++cursor;
+    if (*cursor == '\0' || strcmp(cursor, "?") == 0) {
+        send_as5600_status();
+        return;
+    }
+    if (strcmp(cursor, "ZERO") == 0) {
+        if (Stepper_IsBusy()) { send_error("busy"); return; }
+        AS5600_ZeroAtPosition(Stepper_GetPos(AXIS_Z));
+        send_ok();
+        return;
+    }
+    if (strncmp(cursor, "DIR", 3U) == 0) {
+        cursor += 3;
+        while (*cursor == ' ' || *cursor == '\t') ++cursor;
+        if (*cursor == '\0' || strcmp(cursor, "?") == 0) {
+            send_value("AS5600 DIR=", AS5600_GetInverted() ? 1 : 0,
+                       " ;0=normal 1=reverse\r\n");
+            send_ok();
+            return;
+        }
+        if (Stepper_IsBusy()) { send_error("busy"); return; }
+        bool inverted;
+        if (strcmp(cursor, "NORMAL") == 0 || strcmp(cursor, "0") == 0) inverted = false;
+        else if (strcmp(cursor, "REVERSE") == 0 || strcmp(cursor, "1") == 0) inverted = true;
+        else if (strcmp(cursor, "TOGGLE") == 0) inverted = !AS5600_GetInverted();
+        else { send_error("AS5600 DIR value NORMAL, REVERSE, or TOGGLE"); return; }
+        AS5600_SetInverted(inverted);
+        AS5600_ZeroAtPosition(Stepper_GetPos(AXIS_Z));
+        send_ok();
+        return;
+    }
+    send_error("AS5600 command?");
 }
 
 static bool parse_unsigned(const char *text, uint32_t *value)
@@ -558,6 +660,7 @@ static void parse_setting(const char *line)
     if (strcmp(line, "$22") == 0) { send_value("$22=", Stepper_GetDirectionInverted(AXIS_Z) ? 1 : 0, " ;Z direction invert\r\n"); send_ok(); return; }
     if (strcmp(line, "$23") == 0) { send_value("$23=", Limit_GetActiveHigh() ? 1 : 0, " ;limit active-high\r\n"); send_ok(); return; }
     if (strcmp(line, "$24") == 0) { send_value("$24=", Limit_GetEnabled() ? 1 : 0, " ;Z limits enabled\r\n"); send_ok(); return; }
+    if (strcmp(line, "$25") == 0) { send_value("$25=", AS5600_GetInverted() ? 1 : 0, " ;AS5600 direction invert\r\n"); send_ok(); return; }
 
     const char *cursor = line + 1;
     uint32_t number = 0U;
@@ -567,7 +670,7 @@ static void parse_setting(const char *line)
     uint32_t value;
     if (!parse_unsigned(cursor, &value)) { send_error("bad value"); return; }
 
-    if (Stepper_IsBusy() && number >= 20U && number <= 24U) { send_error("busy"); return; }
+    if (Stepper_IsBusy() && number >= 20U && number <= 25U) { send_error("busy"); return; }
     if ((number == 0U || number == 1U || number == 4U || number == 5U || number == 6U) &&
         (value < STEPPER_MIN_SPEED_SPS || value > STEPPER_MAX_SPEED_SPS)) {
         send_error("speed range 20..10000"); return;
@@ -579,7 +682,7 @@ static void parse_setting(const char *line)
          number == 15U || number == 16U) && value == 0U) {
         send_error("calibration must be >0"); return;
     }
-    if ((number == 14U || (number >= 20U && number <= 24U)) && value > 1U) {
+    if ((number == 14U || (number >= 20U && number <= 25U)) && value > 1U) {
         send_error("boolean must be 0 or 1"); return;
     }
     switch (number) {
@@ -596,13 +699,21 @@ static void parse_setting(const char *line)
         case 12: gc.steps_per_rev[AXIS_Y] = value; break;
         case 13: gc.um_per_rev[AXIS_Y] = value; break;
         case 14: gc.unit_mm = value != 0U; break;
-        case 15: gc.steps_per_rev[AXIS_Z] = value; break;
+        case 15:
+            gc.steps_per_rev[AXIS_Z] = value;
+            AS5600_SetStepsPerRevolution(value);
+            AS5600_ZeroAtPosition(Stepper_GetPos(AXIS_Z));
+            break;
         case 16: gc.um_per_rev[AXIS_Z] = value; break;
         case 20: Stepper_SetDirectionInverted(AXIS_X, value != 0U); break;
         case 21: Stepper_SetDirectionInverted(AXIS_Y, value != 0U); break;
         case 22: Stepper_SetDirectionInverted(AXIS_Z, value != 0U); break;
         case 23: Limit_SetActiveHigh(value != 0U); break;
         case 24: Limit_SetEnabled(value != 0U); break;
+        case 25:
+            AS5600_SetInverted(value != 0U);
+            AS5600_ZeroAtPosition(Stepper_GetPos(AXIS_Z));
+            break;
         default: send_error("unknown setting"); return;
     }
     send_ok();
@@ -689,6 +800,8 @@ static bool execute_line(CommandSource source, char *line, bool script)
     if (*line == '\0') { if (!script) send_ok(); return true; }
 
     if (strcmp(line, "HELP") == 0) { GCode_Send(s_command_help); return true; }
+    if (strcmp(line, "AS5600") == 0 || strcmp(line, "AS5600?") == 0 ||
+        strncmp(line, "AS5600 ", 7U) == 0) { parse_as5600_command(line); return true; }
     if (strcmp(line, "CANID") == 0 || strcmp(line, "CANID?") == 0 ||
         strncmp(line, "CANID ", 6U) == 0) { parse_can_id_command(line); return true; }
     if (strcmp(line, "CAN STATUS") == 0) { send_can_status(); return true; }
@@ -891,6 +1004,8 @@ void GCode_Init(void)
         gc.steps_per_rev[axis] = DEFAULT_STEPS_PER_REV;
         gc.um_per_rev[axis] = DEFAULT_UM_PER_REV;
     }
+    AS5600_SetStepsPerRevolution(gc.steps_per_rev[AXIS_Z]);
+    AS5600_ZeroAtPosition(Stepper_GetPos(AXIS_Z));
     if (estop_button_active()) {
         Stepper_StopAll();
         s_estop_latched = true;
@@ -925,6 +1040,7 @@ bool GCode_ExecuteScriptLine(CommandSource source, const char *line)
 
 void GCode_Poll(void)
 {
+    AS5600_Poll();
     LinearActuator_Poll();
     if (take_estop_report_pending()) enter_estop_alarm();
     if (gc.dwelling && (int32_t)(HAL_GetTick() - gc.dwell_end_ms) >= 0) gc.dwelling = false;

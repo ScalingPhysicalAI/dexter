@@ -8,6 +8,7 @@ STM32CubeL5 V1.6.0.
 - X STEP/DIR: PA0/PA4
 - Y STEP/DIR: PA1/PA5
 - Z STEP/DIR: PB10/PB11
+- Z AS5600 feedback: I2C1 SCL/SDA on PB6/PB7, address `0x36`
 - Z minimum/maximum limits: PC0/PC1, normally closed, pull-up enabled
 - Emergency-stop button: PC2, active-low with pull-up, EXTI priority 0
 - Linear actuator H-bridge: PC6 digital ENA, PC7 IN1, PC8 IN2
@@ -18,6 +19,12 @@ STM32CubeL5 V1.6.0.
 
 The CAN pins require an external CAN transceiver. Install 120 ohm termination
 only at the two physical ends of the CAN bus.
+
+Connect the AS5600 at 3.3 V with a common ground. PB6 is SCL and PB7 is SDA;
+install external pull-ups (typically 4.7 kohm) from both lines to 3.3 V. The
+firmware samples the sensor at 100 Hz and reads its magnetic-field status plus
+12-bit raw angle. If the sensor is offline, retries are reduced to 10 Hz so a
+missing device does not continuously delay normal command processing.
 
 `can_interface.c` accepts standard 11-bit CAN frames. STM32L552 provides three
 hardware elements in RX FIFO 0 and the TX FIFO/queue. `limit_switches.c` treats
@@ -93,9 +100,10 @@ Direction and limit settings are runtime settings:
 - `$22=0/1`: normal/inverted Z positive direction
 - `$23=0/1`: active-low/active-high Z limit inputs
 - `$24=0/1`: disable/enable Z limit enforcement; default is disabled
+- `$25=0/1`: normal/inverted AS5600 feedback direction
 - `DIR X|Y|Z NORMAL|REVERSE|TOGGLE`: readable motor-direction command
 - `LIMIT ON|OFF`: readable limit enable/disable command
-- `$20` through `$24`, `DIR?`, or `LIMIT?`: query settings
+- `$20` through `$25`, `DIR?`, or `LIMIT?`: query settings
 - `$`: print all motion and calibration settings
 
 The Z minimum and maximum inputs are checked in the timer ISR before every Z
@@ -105,6 +113,19 @@ safe condition.
 
 The `?` status response includes `LimZ:min,max`, making it possible to verify
 both switches and the selected polarity before energizing the motor drivers.
+It also includes `ZFb:position,error,state` in the currently selected step or
+millimetre units, where error is measured AS5600 position minus commanded Z
+position. Use `AS5600?` for raw angle, step-based position, magnetic
+diagnostics, multi-turn count, direction, and I2C error count. `AS5600 ZERO`
+aligns feedback to the current commanded Z position; `AS5600 DIR
+NORMAL|REVERSE|TOGGLE` selects mounting direction. These commands work over
+USB, LPUART1, CAN, and scripts.
+
+The AS5600 is an absolute single-turn sensor. Firmware extends it to a relative
+multi-turn position by tracking wraparound while powered. Run `AS5600 ZERO`
+after installation, and again if the mechanism moved while the controller or
+sensor was unpowered. Feedback is diagnostic only in this release; it does not
+automatically correct motion or trigger E-stop.
 
 ## Cycle engine and host scripts
 

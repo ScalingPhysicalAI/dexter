@@ -20,6 +20,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "usb_device.h"
+#include "as5600.h"
 #include "can_interface.h"
 #include "command_io.h"
 #include "cycle_engine.h"
@@ -51,6 +52,7 @@
 
 TIM_HandleTypeDef htim2;
 FDCAN_HandleTypeDef hfdcan1;
+I2C_HandleTypeDef hi2c1;
 
 UART_HandleTypeDef hlpuart1;
 
@@ -63,6 +65,7 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_ICACHE_Init(void);
 void MX_FDCAN1_Init(void);
+void MX_I2C1_Init(void);
 /* USER CODE BEGIN PFP */
 void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
 /* USER CODE END PFP */
@@ -103,11 +106,13 @@ int main(void)
   MX_ICACHE_Init();
   MX_TIM2_Init();
   MX_FDCAN1_Init();
+  MX_I2C1_Init();
   MX_LPUART1_UART_Init();
   MX_USB_Device_Init();
   /* USER CODE BEGIN 2 */
   if (!CAN_Interface_Init(&hfdcan1)) Error_Handler();
   Stepper_Init(&htim2);
+  AS5600_Init(&hi2c1);
   LinearActuator_Init();
   GCode_Init();
   CycleEngine_Init();
@@ -150,6 +155,27 @@ void MX_FDCAN1_Init(void)
   hfdcan1.Init.ExtFiltersNbr = 0;
   hfdcan1.Init.TxFifoQueueMode = FDCAN_TX_FIFO_OPERATION;
   if (HAL_FDCAN_Init(&hfdcan1) != HAL_OK) Error_Handler();
+}
+
+/**
+  * @brief I2C1 Initialization Function
+  * @retval None
+  */
+void MX_I2C1_Init(void)
+{
+  hi2c1.Instance = I2C1;
+  /* 100 kHz standard-mode timing with the 110 MHz PCLK1 clock. */
+  hi2c1.Init.Timing = 0x60514452;
+  hi2c1.Init.OwnAddress1 = 0;
+  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.OwnAddress2 = 0;
+  hi2c1.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK) Error_Handler();
+  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE) != HAL_OK) Error_Handler();
+  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0) != HAL_OK) Error_Handler();
 }
 
 /**

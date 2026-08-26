@@ -9,6 +9,7 @@
 | X stepper | PA0 STEP, PA4 DIR | X motor driver logic inputs | 3.3 V logic |
 | Y stepper | PA1 STEP, PA5 DIR | Y motor driver logic inputs | 3.3 V logic |
 | Z stepper | PB10 STEP, PB11 DIR | Z motor driver logic inputs | 3.3 V logic |
+| Z position feedback | PB6 I2C1 SCL, PB7 I2C1 SDA | AS5600 SCL/SDA | Address 0x36; 3.3 V; external pull-ups (typically 4.7 kohm) |
 | Z minimum limit | PC0 | Switch to the configured active level | Internal pull-up |
 | Z maximum limit | PC1 | Switch to the configured active level | Internal pull-up |
 | Emergency stop | PC2 | Normally-open button to GND | Active-low, internal pull-up |
