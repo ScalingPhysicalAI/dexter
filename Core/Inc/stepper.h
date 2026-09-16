@@ -10,7 +10,9 @@
 #define AXIS_Y 1U
 #define AXIS_Z 2U
 #define STEPPER_MIN_SPEED_SPS 20U
-#define STEPPER_MAX_SPEED_SPS 10000U
+/* 50 kHz scheduler: at 20 ksteps/s each STEP pulse has at least one
+ * 20 us high tick and one low tick. */
+#define STEPPER_MAX_SPEED_SPS 20000U
 #define STEPPER_DEFAULT_MAX_SPEED_SPS 1000U
 #define STEPPER_DEFAULT_ACCEL_SPS2 5000U
 

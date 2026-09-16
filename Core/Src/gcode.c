@@ -82,6 +82,7 @@ static const char s_command_help[] =
     "\r\n=== Dexter STM32L552ZET6 motion controller ===\r\n"
     "Command ports: USB CDC, LPUART1 IRQ, or CAN (CANID? to query)\r\n"
     "Motion: G0/G1 X.. Y.. Z.. [F..] (XYZ synchronized)\r\n"
+    "Feed: F<steps/s> sets G1 feed, F? reads it (20..20000)\r\n"
     "Modes: G90 absolute, G91 relative, G92 set position, G4 P.. dwell\r\n"
     "Linear: M3 S<ms> extend, M4 S<ms> retract, M5 stop\r\n"
     "Control: ? status, ! hold, ~ resume, ESTOP/M112, CLEAR ALARM\r\n"
@@ -717,7 +718,11 @@ static bool parse_unsigned(const char *text, uint32_t *value)
 {
     if (*text < '0' || *text > '9') return false;
     uint32_t result = 0U;
-    while (*text >= '0' && *text <= '9') result = result * 10U + (uint32_t)(*text++ - '0');
+    while (*text >= '0' && *text <= '9') {
+        uint32_t digit = (uint32_t)(*text++ - '0');
+        if (result > (UINT32_MAX - digit) / 10U) return false;
+        result = result * 10U + digit;
+    }
     while (*text == ' ' || *text == '\t') ++text;
     if (*text != '\0') return false;
     *value = result;
@@ -905,7 +910,7 @@ static void parse_setting(const char *line)
     if (GCode_IsMotionBusy() && number >= 20U && number <= 30U) { send_error("busy"); return; }
     if ((number == 0U || number == 1U || number == 4U || number == 5U || number == 6U) &&
         (value < STEPPER_MIN_SPEED_SPS || value > STEPPER_MAX_SPEED_SPS)) {
-        send_error("speed range 20..10000"); return;
+        send_error("speed range 20..20000"); return;
     }
     if ((number == 2U || number == 3U || number == 7U) && (value == 0U || value > 1000000U)) {
         send_error("accel range 1..1000000"); return;
@@ -921,7 +926,7 @@ static void parse_setting(const char *line)
         send_error("Z tolerance range 1..1000"); return;
     }
     if (number == 28U && (value < STEPPER_MIN_SPEED_SPS || value > STEPPER_MAX_SPEED_SPS)) {
-        send_error("Z correction speed range 20..10000"); return;
+        send_error("Z correction speed range 20..20000"); return;
     }
     if (number == 29U && (value == 0U || value > 100000U)) {
         send_error("Z max correction range 1..100000"); return;
@@ -1097,6 +1102,24 @@ static bool execute_line(CommandSource source, char *line, bool script)
     }
     if (strncmp(line, "MACRO ", 6U) == 0) { CycleEngine_PrintMacro(line + 6, source); send_ok(); return true; }
     if (*line == '$') { parse_setting(line); return true; }
+    if (strcmp(line, "F?") == 0) {
+        send_value("F=", (int32_t)gc.feed_sps, " ;steps/s\r\n");
+        send_ok();
+        return true;
+    }
+    if (*line == 'F') {
+        const char *value_text = line + 1;
+        while (*value_text == ' ' || *value_text == '\t') ++value_text;
+        uint32_t feed;
+        if (!parse_unsigned(value_text, &feed) ||
+            feed < STEPPER_MIN_SPEED_SPS || feed > STEPPER_MAX_SPEED_SPS) {
+            send_error("F range 20..20000 steps/s");
+            return false;
+        }
+        gc.feed_sps = feed;
+        send_ok();
+        return true;
+    }
 
     bool has_g, has_m, has_x, has_y, has_z, has_f, has_p;
     int32_t g10 = parse_word_tenths(line, 'G', &has_g);

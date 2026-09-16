@@ -77,6 +77,18 @@ Core commands include `G0`, `G1`, `G4`, `G28`, `G90`, `G91`, `G92`, `M17`,
 `!`, `~`, `$H`, `$X`, and `HELP`. Units are raw
 steps by default; `$14=1` enables calibrated millimetres.
 
+The configurable step-rate ceiling is 20,000 steps/s. Set `$0`, `$1`, and
+`$6` for the X, Y, and Z axis limits, then `$5` for G0 rapid speed or `$4`
+for the default G1 feed speed. A G1 `F` value can set the feed for a move.
+Send `F12000` to change the default G1 feed to 12,000 steps/s without a move;
+`F?` reports the current feed. The standalone `F` command always uses
+steps/s. Axis limits still apply to every move.
+For example, `$0=12000` and `$5=12000` permit a 12,000 steps/s X-only G0
+move. The startup axis and rapid limits remain 1,000 steps/s. Acceleration
+settings `$2`, `$3`, and `$7` may also need adjustment for short moves to
+reach the requested speed. Verify the motor and driver can sustain the chosen
+rate without missed steps.
+
 The linear DC actuator uses an external H-bridge. `M3 S<ms>` extends,
 `M4 S<ms>` retracts, and `M5` stops immediately. `S` is optional and defaults
 to `0` (run continuously). PC6 is a digital enable output: HIGH while running
@@ -103,7 +115,7 @@ Direction, limit, and Z-feedback settings are runtime settings:
 - `$25=0/1`: normal/inverted AS5600 feedback direction
 - `$26=0/1`: disable/enable closed-loop Z catch-up; default is enabled
 - `$27=1..1000`: acceptable Z encoder error in steps; default is 8
-- `$28=20..10000`: correction-pulse speed in steps/s; default is 250
+- `$28=20..20000`: correction-pulse speed in steps/s; default is 250
 - `$29=1..100000`: maximum extra correction pulses per move; default is 1000
 - `$30=100..60000`: correction timeout after the primary move; default is 8000 ms
 - `DIR X|Y|Z NORMAL|REVERSE|TOGGLE`: readable motor-direction command

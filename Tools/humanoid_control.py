@@ -90,7 +90,7 @@ class DexterWindow(QMainWindow):
         self.jog_distance.setRange(0.1, 10000.0)
         self.jog_distance.setValue(10.0)
         self.jog_feed = QSpinBox()
-        self.jog_feed.setRange(20, 10000)
+        self.jog_feed.setRange(20, 20000)
         self.jog_feed.setValue(500)
         form.addRow("Distance:", self.jog_distance)
         form.addRow("Feed (steps/s):", self.jog_feed)
